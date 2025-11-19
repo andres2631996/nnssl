@@ -89,7 +89,7 @@ def main(args):
         subject_info.update(subject)
 
     dataset_info = {
-        "angio": {
+        "0": {
             "dataset_index": 0,
             "dataset_info": None,
             "name": None,
