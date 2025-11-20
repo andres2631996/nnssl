@@ -9,7 +9,7 @@ import numpy as np
 from nnssl.imageio.reader_writer_registry import recursive_find_reader_writer_by_name
 from nnssl.utilities.json_export import recursive_fix_for_json_export
 
-PREPROCESS_SPACING_STYLES = Literal["onemmiso", "median", "noresample"]
+PREPROCESS_SPACING_STYLES = Literal["onemmiso", "median", "noresample", "o5mmiso"]
 
 
 def dataclass_to_dict(data):
@@ -137,7 +137,9 @@ class Plan:
 
     @staticmethod
     def from_dict(json_dict: dict):
-        configs = {k: ConfigurationPlan(**v) for k, v in json_dict["configurations"].items()}
+        configs = {
+            k: ConfigurationPlan(**v) for k, v in json_dict["configurations"].items()
+        }
 
         json_dict["configurations"] = configs
         return Plan(**json_dict)
@@ -147,5 +149,7 @@ class Plan:
 
     def serialize(self) -> dict:
         res = asdict(self)
-        res["configurations"] = {k: v.serialize() for k, v in self.configurations.items()}
+        res["configurations"] = {
+            k: v.serialize() for k, v in self.configurations.items()
+        }
         return res

@@ -5,7 +5,10 @@ import json
 from nnssl.experiment_planning.experiment_planners.plan import Plan, ConfigurationPlan
 import torch
 from dataclasses import dataclass, fields
-from batchgenerators.utilities.file_and_folder_operations import load_json, maybe_mkdir_p
+from batchgenerators.utilities.file_and_folder_operations import (
+    load_json,
+    maybe_mkdir_p,
+)
 from torch.optim.optimizer import required
 from nnssl.training.nnsslTrainer.AbstractTrainer import AbstractBaseTrainer
 from nnssl.adaptation_planning.adaptation_plan import AdaptationPlan, ArchitecturePlans
@@ -55,7 +58,7 @@ def add_pretrain_plan_entry():
     parser.add_argument(
         "-spacing_style",
         type=str,
-        help="Spacing style: [onemmiso, median, noresample], Default onemmiso",
+        help="Spacing style: [onemmiso, median, o5mmiso, noresample], Default onemmiso",
         default="onemmiso",
     )
 
@@ -65,7 +68,9 @@ def add_pretrain_plan_entry():
     else:
         recommended_downstream_patchsize = args.recommended_downstream_patchsize
     plan_dict = load_json(args.pl)
-    plan_dict["configurations"]["onemmiso"] = plan_dict["configurations"].pop("3d_fullres")
+    plan_dict["configurations"]["onemmiso"] = plan_dict["configurations"].pop(
+        "3d_fullres"
+    )
 
     copy_dict = deepcopy(plan_dict)
     valid_keys_plan = {f.name for f in fields(Plan)}
@@ -74,9 +79,13 @@ def add_pretrain_plan_entry():
     # remove old keys from config and match configs
     valid_keys = {f.name for f in fields(ConfigurationPlan)}
     plan_dict["configurations"][args.spacing_style] = {
-        k: v for k, v in copy_dict["configurations"][args.spacing_style].items() if k in valid_keys
+        k: v
+        for k, v in copy_dict["configurations"][args.spacing_style].items()
+        if k in valid_keys
     }
-    plan_dict["configurations"][args.spacing_style]["spacing_style"] = args.spacing_style
+    plan_dict["configurations"][args.spacing_style][
+        "spacing_style"
+    ] = args.spacing_style
     plan = Plan.from_dict(plan_dict)
     # print(plan)
     adapt_plan: AdaptationPlan = get_adaptation(
