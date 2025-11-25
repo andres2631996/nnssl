@@ -148,11 +148,7 @@ def preprocess_and_save(
     )
     output_image_filename.parent.mkdir(parents=True, exist_ok=True)
 
-    if (
-        not (os.path.exists(output_image_filename))
-        or not (os.path.exists(output_anat_filename))
-        or not (os.path.exists(output_anon_filename))
-    ):
+    if not (os.path.exists(str(output_image_filename) + ".b2nd")):
         try:
             rw = plan.image_reader_writer_class()()
             image_path = image.image_path
