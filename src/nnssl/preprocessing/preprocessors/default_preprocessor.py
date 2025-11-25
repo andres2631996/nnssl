@@ -16,6 +16,7 @@ from dataclasses import asdict
 from functools import partial
 import multiprocessing
 from pathlib import Path
+import os
 from typing import Callable, Literal, Union
 
 from loguru import logger
@@ -146,63 +147,70 @@ def preprocess_and_save(
         join(output_directory, image.get_output_path("anat_mask"))
     )
     output_image_filename.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        rw = plan.image_reader_writer_class()()
-        image_path = image.image_path
-        data, data_properties = rw.read_images([image_path])
-        # Verify data is not None -- If it is, we discard the image.
-        if np.any(np.isnan(data)):
-            raise RuntimeError("Found NaNs in the image")
-        if np.any(np.isinf(data)):
-            raise RuntimeError("Found infs in the image")
 
-        if image.associated_masks is not None:
-            masks = [
-                rw.read_seg(v)[0]
-                for v in asdict(image.associated_masks).values()
-                if v is not None
-            ]
-        else:
-            masks = None
-        data, masks = pp_case_func(
-            data, masks, data_properties, plan, config_plan, verbose
-        )
-        # print('dtypes', data.dtype, seg.dtype)
-        block_size_data, chunk_size_data = nnSSLDatasetBlosc2.comp_blosc2_params(
-            data.shape, tuple([160, 160, 160]), data.itemsize
-        )
-        if masks is not None:
-            block_size_seg, chunk_size_seg = nnSSLDatasetBlosc2.comp_blosc2_params(
+    if (
+        not (os.path.exists(output_image_filename))
+        or not (os.path.exists(output_anat_filename))
+        or not (os.path.exists(output_anon_filename))
+    ):
+        try:
+            rw = plan.image_reader_writer_class()()
+            image_path = image.image_path
+            data, data_properties = rw.read_images([image_path])
+            # Verify data is not None -- If it is, we discard the image.
+            if np.any(np.isnan(data)):
+                raise RuntimeError("Found NaNs in the image")
+            if np.any(np.isinf(data)):
+                raise RuntimeError("Found infs in the image")
+
+            if image.associated_masks is not None:
+                masks = [
+                    rw.read_seg(v)[0]
+                    for v in asdict(image.associated_masks).values()
+                    if v is not None
+                ]
+            else:
+                masks = None
+            data, masks = pp_case_func(
+                data, masks, data_properties, plan, config_plan, verbose
+            )
+            # print('dtypes', data.dtype, seg.dtype)
+            block_size_data, chunk_size_data = nnSSLDatasetBlosc2.comp_blosc2_params(
                 data.shape, tuple([160, 160, 160]), data.itemsize
             )
-            if image.associated_masks.anatomy_mask is not None:
-                anat_mask = masks[0]
+            if masks is not None:
+                block_size_seg, chunk_size_seg = nnSSLDatasetBlosc2.comp_blosc2_params(
+                    data.shape, tuple([160, 160, 160]), data.itemsize
+                )
+                if image.associated_masks.anatomy_mask is not None:
+                    anat_mask = masks[0]
+                else:
+                    anat_mask = None
+                if image.associated_masks.anonymization_mask is not None:
+                    anon_mask = masks[-1]
+                else:
+                    anon_mask = None
             else:
-                anat_mask = None
-            if image.associated_masks.anonymization_mask is not None:
-                anon_mask = masks[-1]
-            else:
-                anon_mask = None
-        else:
-            block_size_seg, chunk_size_seg = None, None
-            anat_mask, anon_mask = None, None
+                block_size_seg, chunk_size_seg = None, None
+                anat_mask, anon_mask = None, None
 
-        nnSSLDatasetBlosc2.save_case(
-            data,
-            anon_mask,
-            anat_mask,
-            data_properties,
-            str(output_image_filename),
-            str(output_anon_filename),
-            str(output_anat_filename),
-            chunks=chunk_size_data,
-            blocks=block_size_data,
-            chunks_seg=chunk_size_seg,
-            blocks_seg=block_size_seg,
-        )
-    except Exception as e:
-        print(f"Error processing {image_path}: {str(e)}")
-        return False
+            nnSSLDatasetBlosc2.save_case(
+                data,
+                anon_mask,
+                anat_mask,
+                data_properties,
+                str(output_image_filename),
+                str(output_anon_filename),
+                str(output_anat_filename),
+                chunks=chunk_size_data,
+                blocks=block_size_data,
+                chunks_seg=chunk_size_seg,
+                blocks_seg=block_size_seg,
+            )
+        except Exception as e:
+            print(f"Error processing {image_path}: {str(e)}")
+            return False
+        return True
     return True
 
 
