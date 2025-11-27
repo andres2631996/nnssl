@@ -55,6 +55,7 @@ def preprocess_case(
     config_plan: "ConfigurationPlan",
     verbose: bool,
 ):
+    verbose = False
     # let's not mess up the inputs!
     data = np.copy(data)
     if masks is not None:
@@ -148,7 +149,11 @@ def preprocess_and_save(
     )
     output_image_filename.parent.mkdir(parents=True, exist_ok=True)
 
-    if not (os.path.exists(str(output_image_filename) + ".b2nd")):
+    if (
+        not (os.path.exists(str(output_image_filename) + ".b2nd"))
+        or not (os.path.exists(str(output_image_filename) + ".pkl"))
+        or not (os.path.exists(str(output_image_filename) + "__anat.b2nd"))
+    ):
         try:
             rw = plan.image_reader_writer_class()()
             image_path = image.image_path
@@ -167,6 +172,7 @@ def preprocess_and_save(
                 ]
             else:
                 masks = None
+
             data, masks = pp_case_func(
                 data, masks, data_properties, plan, config_plan, verbose
             )
@@ -203,6 +209,7 @@ def preprocess_and_save(
                 chunks_seg=chunk_size_seg,
                 blocks_seg=block_size_seg,
             )
+            print(output_image_filename)
         except Exception as e:
             print(f"Error processing {image_path}: {str(e)}")
             return False
