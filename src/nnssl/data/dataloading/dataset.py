@@ -167,6 +167,20 @@ class nnSSLDatasetBlosc2(nnSSLBaseDataset):
 
         return data_and_pkl_exists, anon_exists, anat_exists
 
+    def safe_b2nd_save(array: np.ndarray, filename: str, chunks, blocks, cparams):
+        tmp_file = filename + ".tmp.b2nd"
+        arr = blosc2.asarray(
+            np.ascontiguousarray(array),
+            urlpath=tmp_file,
+            chunks=chunks,
+            blocks=blocks,
+            cparams=cparams,
+            mmap_mode="w+",  # needed for large arrays
+        )
+        arr.flush()
+        arr.close()
+        os.replace(tmp_file, filename + ".b2nd")  # atomic rename
+
     @staticmethod
     def save_case(
         data: np.ndarray,
@@ -196,6 +210,20 @@ class nnSSLDatasetBlosc2(nnSSLBaseDataset):
             "clevel": clevel,
         }
 
+        def safe_b2nd_save(array: np.ndarray, filename: str, chunks, blocks, cparams):
+            tmp_file = filename + ".tmp.b2nd"
+            arr = blosc2.asarray(
+                np.ascontiguousarray(array),
+                urlpath=tmp_file,
+                chunks=chunks,
+                blocks=blocks,
+                cparams=cparams,
+                mmap_mode="w+",  # needed for large arrays
+            )
+            arr.flush()
+            arr.close()
+            os.replace(tmp_file, filename + ".b2nd")  # atomic rename
+
         if anon_mask is not None:
             blosc2.asarray(
                 np.ascontiguousarray(anon_mask),
@@ -218,14 +246,17 @@ class nnSSLDatasetBlosc2(nnSSLBaseDataset):
 
         write_pickle(properties, output_filename_truncated + ".pkl")
 
+        """
         blosc2.asarray(
             np.ascontiguousarray(data),
             urlpath=output_filename_truncated + ".b2nd",
             chunks=chunks,
             blocks=blocks,
             cparams=cparams,
-            mmap_mode=None,
+            mmap_mode="w+",
         )
+        """
+        safe_b2nd_save(data, output_filename_truncated, chunks, blocks, cparams)
 
     @staticmethod
     def get_identifiers(folder: str) -> List[str]:
