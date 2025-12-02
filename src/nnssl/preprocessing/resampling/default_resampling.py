@@ -218,6 +218,66 @@ def torch_resize_2d(arr, new_shape, is_seg=False):
     return out[0].cpu().numpy()
 
 
+def _torch_device(prefer_cuda: bool = True):
+    if prefer_cuda and torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+def _to_torch_tensor(x: np.ndarray, device: torch.device):
+    t = torch.from_numpy(x)
+    # float tensors for interpolation; keep ints for segs handled separately
+    return t.to(device)
+
+
+def _torch_interpolate(
+    tensor: torch.Tensor, size: tuple[int, ...], mode: str, align_corners: bool | None
+):
+    # tensor shape expected: (N, C, ...) where ... is spatial dims
+    return F.interpolate(tensor, size=size, mode=mode, align_corners=align_corners)
+
+
+def _batched_2d_resize_slices(
+    vol_swapped: np.ndarray,
+    target_hw: tuple[int, int],
+    is_seg: bool,
+    device: torch.device,
+):
+    """
+    vol_swapped: (D, H, W) numpy
+    returns: (D, H2, W2) numpy
+    Single batched 2D interpolation over all slices.
+    """
+    # create tensor shape (D, 1, H, W) for batch-of-slices
+    x = torch.from_numpy(vol_swapped[:, None]).float().to(device)  # (D,1,H,W)
+    mode = "nearest" if is_seg else "bilinear"
+    align_corners = None if is_seg else False
+    out = _torch_interpolate(
+        x, size=target_hw, mode=mode, align_corners=align_corners
+    )  # (D,1,H2,W2)
+    out_np = out.squeeze(1).cpu().numpy()  # (D, H2, W2)
+    return out_np
+
+
+def _batched_3d_resize(
+    vol_3d: np.ndarray,
+    new_shape: tuple[int, int, int],
+    is_seg: bool,
+    device: torch.device,
+):
+    """
+    vol_3d: (D, H, W) numpy -> will be treated as (1, 1, D, H, W) for interpolate
+    returns: (D2, H2, W2) numpy
+    """
+    x = torch.from_numpy(vol_3d[None, None]).float().to(device)  # (1,1,D,H,W)
+    mode = "nearest" if is_seg else "trilinear"
+    align_corners = None if is_seg else False
+    out = _torch_interpolate(
+        x, size=tuple(new_shape), mode=mode, align_corners=align_corners
+    )  # (1,1,D2,H2,W2)
+    return out[0, 0].cpu().numpy()
+
+
 def resample_data_or_seg(
     data: np.ndarray,
     new_shape: Union[Tuple[float, ...], List[float], np.ndarray],
