@@ -298,8 +298,7 @@ def default_preprocess(
             ]
 
     if num_processes > 1:
-        # with multiprocessing.get_context("spawn").Pool(num_processes) as p:
-        with multiprocessing.get_context("fork").Pool(num_processes) as p:
+        with multiprocessing.get_context("spawn").Pool(num_processes) as p:
             r = p.map(preprocess_and_save_partial, all_independent_images)
     else:
         r = [preprocess_and_save_partial(image=img) for img in all_independent_images]
