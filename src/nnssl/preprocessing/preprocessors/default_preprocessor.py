@@ -154,6 +154,11 @@ def preprocess_and_save(
         or not (os.path.exists(str(output_image_filename) + ".pkl"))
         or not (os.path.exists(str(output_image_filename) + "__anat.b2nd"))
     ):
+        # if (
+        #    not (os.path.exists(str(output_image_filename) + ".npy"))
+        #    and not (os.path.exists(str(output_image_filename) + ".pkl"))
+        #    and not (os.path.exists(str(output_image_filename) + "__anat.b2nd"))
+        # ):
         try:
             rw = plan.image_reader_writer_class()()
             image_path = image.image_path

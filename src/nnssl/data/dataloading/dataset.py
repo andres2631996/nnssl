@@ -119,9 +119,16 @@ class nnSSLDatasetBlosc2(nnSSLBaseDataset):
         output_anat_mask_path = img.get_output_path("anat_mask", ext=".b2nd")
         output_anon_mask_path = img.get_output_path("anon_mask", ext=".b2nd")
         data_b2nd_file = join(dataset_dir, output_img_path)
-        data = blosc2.open(
-            urlpath=data_b2nd_file, mode="r", dparams=dparams, mmap_mode="r"
-        )
+        data_npy_file = str(data_b2nd_file).replace(".b2nd", ".npy")
+
+        if os.path.exists(str(data_b2nd_file)):
+            data = blosc2.open(
+                urlpath=data_b2nd_file, mode="r", dparams=dparams, mmap_mode="r"
+            )
+        elif not (os.path.exists(str(data_b2nd_file))) and os.path.exists(
+            str(data_npy_file)
+        ):
+            data = np.load(data_npy_file)
 
         anon_b2nd_file = join(dataset_dir, output_anon_mask_path)
         if isfile(anon_b2nd_file):
@@ -167,20 +174,6 @@ class nnSSLDatasetBlosc2(nnSSLBaseDataset):
 
         return data_and_pkl_exists, anon_exists, anat_exists
 
-    def safe_b2nd_save(array: np.ndarray, filename: str, chunks, blocks, cparams):
-        tmp_file = filename + ".tmp.b2nd"
-        arr = blosc2.asarray(
-            np.ascontiguousarray(array),
-            urlpath=tmp_file,
-            chunks=chunks,
-            blocks=blocks,
-            cparams=cparams,
-            mmap_mode="w+",  # needed for large arrays
-        )
-        arr.flush()
-        arr.close()
-        os.replace(tmp_file, filename + ".b2nd")  # atomic rename
-
     @staticmethod
     def save_case(
         data: np.ndarray,
@@ -198,6 +191,7 @@ class nnSSLDatasetBlosc2(nnSSLBaseDataset):
         codec=blosc2.Codec.ZSTD,
     ):
         blosc2.set_nthreads(1)
+
         if chunks_seg is None:
             chunks_seg = chunks
         if blocks_seg is None:
@@ -209,20 +203,6 @@ class nnSSLDatasetBlosc2(nnSSLBaseDataset):
             # 'splitmode': blosc2.SplitMode.ALWAYS_SPLIT,
             "clevel": clevel,
         }
-
-        def safe_b2nd_save(array: np.ndarray, filename: str, chunks, blocks, cparams):
-            tmp_file = filename + ".tmp.b2nd"
-            arr = blosc2.asarray(
-                np.ascontiguousarray(array),
-                urlpath=tmp_file,
-                chunks=chunks,
-                blocks=blocks,
-                cparams=cparams,
-                mmap_mode="w+",  # needed for large arrays
-            )
-            arr.flush()
-            arr.close()
-            os.replace(tmp_file, filename + ".b2nd")  # atomic rename
 
         if anon_mask is not None:
             blosc2.asarray(
@@ -246,7 +226,6 @@ class nnSSLDatasetBlosc2(nnSSLBaseDataset):
 
         write_pickle(properties, output_filename_truncated + ".pkl")
 
-        """
         blosc2.asarray(
             np.ascontiguousarray(data),
             urlpath=output_filename_truncated + ".b2nd",
@@ -255,8 +234,8 @@ class nnSSLDatasetBlosc2(nnSSLBaseDataset):
             cparams=cparams,
             mmap_mode="w+",
         )
-        """
-        safe_b2nd_save(data, output_filename_truncated, chunks, blocks, cparams)
+
+        # np.save(output_filename_truncated + ".npy", np.ascontiguousarray(data))
 
     @staticmethod
     def get_identifiers(folder: str) -> List[str]:
@@ -397,3 +376,26 @@ def infer_dataset_class(folder: str) -> Union[Type[nnSSLDatasetBlosc2]]:
         f"Unable to infer nnUNetDataset variant!"
     )
     return file_ending_dataset_mapping[list(file_endings)[0]]
+
+
+def write_b2nd_safe(arr: np.ndarray, filename: str, chunks, blocks, cparams):
+    tmp = filename + ".tmp.b2nd"
+    final = filename + ".b2nd"
+
+    if os.path.exists(tmp):
+        os.remove(tmp)
+
+    # Create Blosc2 array in memory
+    a = blosc2.asarray(
+        np.ascontiguousarray(arr),
+        urlpath=None,  # memory-only
+        chunks=chunks,
+        blocks=blocks,
+        cparams=cparams,
+    )
+
+    # Save properly with metadata
+    a.to_disk(tmp)
+
+    # Atomic replace
+    os.replace(tmp, final)
