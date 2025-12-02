@@ -224,7 +224,7 @@ class nnSSLDatasetBlosc2(nnSSLBaseDataset):
             chunks=chunks,
             blocks=blocks,
             cparams=cparams,
-            mmap_mode="w+",
+            mmap_mode=None,
         )
 
     @staticmethod
