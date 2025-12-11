@@ -3,6 +3,9 @@ import torch
 from nnssl.training.loss.abstract_loss import AbstractLoss
 from pytorch_msssim import ssim, ms_ssim, SSIM, MS_SSIM
 from einops import rearrange
+import scipy.ndimage as ndi
+import numpy as np
+import matplotlib.pyplot as plt
 
 
 class MAEMSELoss(AbstractLoss):
@@ -16,9 +19,61 @@ class MAEMSELoss(AbstractLoss):
         """Can take any outputs"""
         # Mask = 1 represents not masked points
         reconstruction_loss = (model_output - target) ** 2  # (B, X, Y, Z, C)
-        reconstruction_loss = torch.sum(reconstruction_loss * (1 - mask)) / torch.sum((1 - mask))
+        reconstruction_loss = torch.sum(reconstruction_loss * (1 - mask)) / torch.sum(
+            (1 - mask)
+        )
 
         return reconstruction_loss
+
+
+class AnatDistWeightedMAEMSELoss(AbstractLoss):
+    def __init__(self):
+        super().__init__()
+        self.loss = nn.MSELoss(reduction="none")
+
+    def forward(
+        self,
+        model_output: torch.Tensor,
+        target: torch.Tensor,
+        anat_mask: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Can take any outputs"""
+        # Mask = 1 represents not masked points
+        reconstruction_loss = (model_output - target) ** 2  # (B, X, Y, Z, C)
+
+        # Derive distance maps
+        dist_map = torch.stack(
+            [
+                torch.from_numpy(
+                    ndi.distance_transform_edt(
+                        (anat_mask[b, 0].detach().cpu().numpy() < 1)
+                    )
+                )
+                for b in range(target.shape[0])
+            ],
+            dim=0,
+        ).to(
+            model_output.device, dtype=model_output.dtype
+        )  # (B, D, H, W)
+        dist_map = dist_map.unsqueeze(1)
+
+        # Weighting: 1 inside vessels, 1 / (dist_map + eps) outside vessels
+        weights = torch.where(
+            anat_mask > 0.5,
+            torch.ones_like(reconstruction_loss),  # original MSE inside vessels
+            1.0 / (dist_map + 1.0),  # decreased MSE outside vessels
+        )
+
+        # Mask weights with mask from MAE
+        effective_weights = weights * (1 - mask)
+
+        reconstruction_loss = torch.sum(reconstruction_loss * effective_weights) / (
+            torch.sum((effective_weights)) + 1e-5
+        )
+
+        return reconstruction_loss
+
 
 class LossMaskMSELoss(AbstractLoss):
     def forward(
@@ -26,7 +81,9 @@ class LossMaskMSELoss(AbstractLoss):
     ) -> torch.Tensor:
         """loss_mask = 1 in positions where loss calculation should take place"""
         reconstruction_loss = (model_output - target) ** 2  # (B, X, Y, Z, C)
-        reconstruction_loss = torch.sum(reconstruction_loss * loss_mask) / torch.sum(loss_mask)
+        reconstruction_loss = torch.sum(reconstruction_loss * loss_mask) / torch.sum(
+            loss_mask
+        )
 
         return reconstruction_loss
 
@@ -37,11 +94,16 @@ class MAEL1Loss(AbstractLoss):
         self.loss = nn.L1Loss(reduction="none")
 
     def forward(
-        self, model_output: torch.Tensor, target: dict[str, torch.Tensor], mask: torch.Tensor
+        self,
+        model_output: torch.Tensor,
+        target: dict[str, torch.Tensor],
+        mask: torch.Tensor,
     ) -> torch.Tensor:
         """Can take any outputs,  ."""
         # Mask = 1 represents not masked points
-        reconstruction_loss = torch.sum(torch.abs(model_output - target) * (1 - mask)) / torch.sum((1 - mask))
+        reconstruction_loss = torch.sum(
+            torch.abs(model_output - target) * (1 - mask)
+        ) / torch.sum((1 - mask))
 
         return reconstruction_loss
 
@@ -52,7 +114,10 @@ class MAESSIMLoss(AbstractLoss):
         self.loss = nn.MSELoss(reduction="none")
 
     def forward(
-        self, model_output: torch.Tensor, target: dict[str, torch.Tensor], mask: torch.Tensor
+        self,
+        model_output: torch.Tensor,
+        target: dict[str, torch.Tensor],
+        mask: torch.Tensor,
     ) -> torch.Tensor:
         """Can take any outputs,  ."""
         # Mask = 1 represents not masked points
@@ -68,7 +133,13 @@ class MAESSIMLoss(AbstractLoss):
         # rescaled_out = rearrange(rescaled_out, "b x y z c -> b c x y z")
         # rescaled_target = rearrange(rescaled_target, "b x y z c -> b c x y z")
 
-        ssim_loss = 1 - ssim(rescaled_out, rescaled_target, data_range=1, size_average=False, nonnegative_ssim=True)
+        ssim_loss = 1 - ssim(
+            rescaled_out,
+            rescaled_target,
+            data_range=1,
+            size_average=False,
+            nonnegative_ssim=True,
+        )
 
         return torch.mean(ssim_loss)
 
@@ -79,7 +150,10 @@ class MAESSIMLoss_WithMask(AbstractLoss):
         self.loss = nn.MSELoss(reduction="none")
 
     def forward(
-        self, model_output: torch.Tensor, target: dict[str, torch.Tensor], mask: torch.Tensor
+        self,
+        model_output: torch.Tensor,
+        target: dict[str, torch.Tensor],
+        mask: torch.Tensor,
     ) -> torch.Tensor:
         """Can take any outputs,  ."""
         # Mask = 1 represents not masked points
@@ -99,7 +173,13 @@ class MAESSIMLoss_WithMask(AbstractLoss):
         )  # Make originally visible stuff 0, so that SSIM focuses on masked areas
         rescaled_target = rescaled_target * (1 - mask)
 
-        ssim_loss = 1 - ssim(rescaled_out, rescaled_target, data_range=1, size_average=False, nonnegative_ssim=True)
+        ssim_loss = 1 - ssim(
+            rescaled_out,
+            rescaled_target,
+            data_range=1,
+            size_average=False,
+            nonnegative_ssim=True,
+        )
 
         return torch.mean(ssim_loss)
 
@@ -110,7 +190,10 @@ class MAE_MS_SSIMLoss(AbstractLoss):
         self.loss = nn.MSELoss(reduction="none")
 
     def forward(
-        self, model_output: torch.Tensor, target: dict[str, torch.Tensor], mask: torch.Tensor
+        self,
+        model_output: torch.Tensor,
+        target: dict[str, torch.Tensor],
+        mask: torch.Tensor,
     ) -> torch.Tensor:
         """Can take any outputs,  ."""
         # Mask = 1 represents not masked points
@@ -126,7 +209,9 @@ class MAE_MS_SSIMLoss(AbstractLoss):
         # rescaled_out = rearrange(rescaled_out, "b x y z c -> b c x y z")
         # rescaled_target = rearrange(rescaled_target, "b x y z c -> b c x y z")
 
-        ssim_loss = 1 - ms_ssim(rescaled_out, rescaled_target, data_range=1, size_average=False, win_size=7)
+        ssim_loss = 1 - ms_ssim(
+            rescaled_out, rescaled_target, data_range=1, size_average=False, win_size=7
+        )
 
         return torch.mean(ssim_loss)
 
@@ -137,7 +222,10 @@ class MAE_MS_SSIMLoss_WithMask(AbstractLoss):
         self.loss = nn.MSELoss(reduction="none")
 
     def forward(
-        self, model_output: torch.Tensor, target: dict[str, torch.Tensor], mask: torch.Tensor
+        self,
+        model_output: torch.Tensor,
+        target: dict[str, torch.Tensor],
+        mask: torch.Tensor,
     ) -> torch.Tensor:
         """Can take any outputs,  ."""
         # Mask = 1 represents not masked points
@@ -153,16 +241,23 @@ class MAE_MS_SSIMLoss_WithMask(AbstractLoss):
         # rescaled_out = rearrange(rescaled_out, "b x y z c -> b c x y z")
         # rescaled_target = rearrange(rescaled_target, "b x y z c -> b c x y z")
 
-        rescaled_out = rescaled_out * (1 - mask)  # Set unmasked stuff 0, so MS SSIM focuses on masked areas
+        rescaled_out = rescaled_out * (
+            1 - mask
+        )  # Set unmasked stuff 0, so MS SSIM focuses on masked areas
         rescaled_target = rescaled_target * (1 - mask)
-        ssim_loss = 1 - ms_ssim(rescaled_out, rescaled_target, data_range=1, size_average=False, win_size=7)
+        ssim_loss = 1 - ms_ssim(
+            rescaled_out, rescaled_target, data_range=1, size_average=False, win_size=7
+        )
 
         return torch.mean(ssim_loss)
 
 
 class MSELoss_NoMask(AbstractLoss):
     def forward(
-        self, model_output: torch.Tensor, target: dict[str, torch.Tensor], mask: torch.Tensor
+        self,
+        model_output: torch.Tensor,
+        target: dict[str, torch.Tensor],
+        mask: torch.Tensor,
     ) -> torch.Tensor:
         return self.loss(model_output, target)
 
@@ -173,7 +268,10 @@ class MSELoss_NoMask(AbstractLoss):
 
 class L1Loss_NoMask(AbstractLoss):
     def forward(
-        self, model_output: torch.Tensor, target: dict[str, torch.Tensor], mask: torch.Tensor
+        self,
+        model_output: torch.Tensor,
+        target: dict[str, torch.Tensor],
+        mask: torch.Tensor,
     ) -> torch.Tensor:
         return self.loss(model_output, target)
 
