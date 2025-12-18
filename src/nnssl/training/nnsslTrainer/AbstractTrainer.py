@@ -49,6 +49,7 @@ from nnssl.ssl_data.dataloading.data_loader_3d import (
     nnsslDataLoader3D,
     nnsslAnatDataLoader3D,
     nnsslDistDataLoader3D,
+    nnsslAnatDilatedDataLoader3D,
 )
 from nnssl.ssl_data.dataloading.utils import get_subject_identifiers
 from nnssl.ssl_data.limited_len_wrapper import LimitedLenWrapper
@@ -845,6 +846,33 @@ class AbstractBaseTrainer(ABC):
         )
         return dl_tr, dl_val
 
+    def get_anatDilated_dataloaders(
+        self,
+        initial_patch_size: Tuple[int, ...],
+        oversample_foreground_percent: float = 1.0,
+    ):
+        dataset_tr, dataset_val = self.get_tr_and_val_datasets()
+
+        dl_tr = nnsslAnatDilatedDataLoader3D(
+            dataset_tr,
+            self.batch_size,
+            initial_patch_size,
+            self.config_plan.patch_size,
+            sampling_probabilities=None,
+            pad_sides=None,
+            oversample_foreground_percent=oversample_foreground_percent,
+        )
+        dl_val = nnsslAnatDilatedDataLoader3D(
+            dataset_val,
+            self.batch_size,
+            self.config_plan.patch_size,
+            self.config_plan.patch_size,
+            sampling_probabilities=None,
+            pad_sides=None,
+            oversample_foreground_percent=oversample_foreground_percent,
+        )
+        return dl_tr, dl_val
+
     @staticmethod
     @abstractmethod
     def get_training_transforms(
@@ -926,6 +954,15 @@ class AbstractBaseTrainer(ABC):
         else:
             loss_here = np.mean(outputs["loss"])
         self.logger.log("train_losses", loss_here, self.current_epoch)
+
+        if (
+            self.current_epoch % 200 == 0
+            and self.current_epoch != 0
+            and self.current_epoch != self.num_epochs - 1
+        ):
+            self.save_checkpoint(
+                join(self.output_folder, f"checkpoint_epoch{self.current_epoch}.pth")
+            )
 
     def on_validation_epoch_end(self, val_outputs: List[dict]):
         outputs_collated = collate_outputs(val_outputs)
