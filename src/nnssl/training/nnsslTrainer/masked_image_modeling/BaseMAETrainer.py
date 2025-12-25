@@ -1833,3 +1833,32 @@ class NonResEncL_BaseMAETrainer_Test(BaseMAETrainer_Test):
             ),
         )
         return architecture, adapt_plan
+
+
+# TRAINERS RUNNING FOR 1,500 EPOCHS
+
+
+class BaseMAETrainer_dilatedANAT_1500ep(BaseMAETrainer_dilatedANAT):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device = torch.device("cuda"),
+    ):
+        super().__init__(plan, configuration_name, fold, pretrain_json, device)
+        self.num_epochs = 1500
+
+
+class BaseMAETrainer_weightedANAT_1500ep(BaseMAETrainer_weightedANAT):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device = torch.device("cuda"),
+    ):
+        super().__init__(plan, configuration_name, fold, pretrain_json, device)
+        self.num_epochs = 1500
