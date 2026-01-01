@@ -1905,6 +1905,20 @@ class BaseMAETrainer_dilatedANAT_1500ep(BaseMAETrainer_dilatedANAT):
         self.num_epochs = 1500
 
 
+class BaseMAETrainer_dilatedANAT_1500ep_BS8(BaseMAETrainer_dilatedANAT):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device = torch.device("cuda"),
+    ):
+        super().__init__(plan, configuration_name, fold, pretrain_json, device)
+        self.num_epochs = 1500
+        self.total_batch_size = 8
+
+
 class BaseMAETrainer_weightedANAT_1500ep(BaseMAETrainer_weightedANAT):
     def __init__(
         self,
@@ -1916,3 +1930,17 @@ class BaseMAETrainer_weightedANAT_1500ep(BaseMAETrainer_weightedANAT):
     ):
         super().__init__(plan, configuration_name, fold, pretrain_json, device)
         self.num_epochs = 1500
+
+
+class BaseMAETrainer_weightedANAT_1500ep_BS8(BaseMAETrainer_weightedANAT):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device = torch.device("cuda"),
+    ):
+        super().__init__(plan, configuration_name, fold, pretrain_json, device)
+        self.num_epochs = 1500
+        self.total_batch_size = 8
