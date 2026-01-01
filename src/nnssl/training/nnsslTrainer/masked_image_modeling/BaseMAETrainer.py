@@ -895,6 +895,19 @@ class BaseMAETrainer_weightedANAT(BaseMAETrainer):
         return {"loss": l.detach().cpu().numpy()}
 
 
+class BaseMAETrainer_weightedANAT_BS8(BaseMAETrainer_weightedANAT):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device = torch.device("cuda"),
+    ):
+        super().__init__(plan, configuration_name, fold, pretrain_json, device)
+        self.total_batch_size = 8
+
+
 class BaseMAETrainer_weightedANAT_warmup50ep(BaseMAETrainer_weightedANAT):
 
     def __init__(
@@ -1073,6 +1086,21 @@ class BaseMAETrainer_weightedANAT_warmup50ep(BaseMAETrainer_weightedANAT):
                 self.grad_scaler.load_state_dict(checkpoint["grad_scaler_state"])
 
 
+class BaseMAETrainer_weightedANAT_warmup50ep_BS8(
+    BaseMAETrainer_weightedANAT_warmup50ep
+):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device = torch.device("cuda"),
+    ):
+        super().__init__(plan, configuration_name, fold, pretrain_json, device)
+        self.total_batch_size = 8
+
+
 class BaseMAETrainer_dilatedANAT(BaseMAETrainer):
 
     def get_dataloaders(self):
@@ -1224,6 +1252,19 @@ class BaseMAETrainer_dilatedANAT(BaseMAETrainer):
             l = self.loss(output, data, anat, mask)
 
         return {"loss": l.detach().cpu().numpy()}
+
+
+class BaseMAETrainer_dilatedANAT_BS8(BaseMAETrainer_dilatedANAT):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device = torch.device("cuda"),
+    ):
+        super().__init__(plan, configuration_name, fold, pretrain_json, device)
+        self.total_batch_size = 8
 
 
 class BaseMAETrainer_dilatedANAT_warmup50ep(BaseMAETrainer_dilatedANAT):
@@ -1402,6 +1443,19 @@ class BaseMAETrainer_dilatedANAT_warmup50ep(BaseMAETrainer_dilatedANAT):
         if self.grad_scaler is not None:
             if checkpoint["grad_scaler_state"] is not None:
                 self.grad_scaler.load_state_dict(checkpoint["grad_scaler_state"])
+
+
+class BaseMAETrainer_dilatedANAT_warmup50ep_BS8(BaseMAETrainer_dilatedANAT_warmup50ep):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device = torch.device("cuda"),
+    ):
+        super().__init__(plan, configuration_name, fold, pretrain_json, device)
+        self.total_batch_size = 8
 
 
 class BaseMAETrainer_ANON(BaseMAETrainer):
