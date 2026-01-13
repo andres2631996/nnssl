@@ -114,6 +114,74 @@ class AnatDistWeightedMAEMSELoss(AbstractLoss):
         return reconstruction_loss
 
 
+class AnatDistExpWeightedMAEMSELoss(AbstractLoss):
+    def __init__(self, alpha=0.5):
+        super().__init__()
+        self.alpha = alpha
+
+    def forward(
+        self,
+        model_output: torch.Tensor,
+        target: torch.Tensor,
+        anat_mask: torch.Tensor,
+        dist_map: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor:
+
+        reconstruction_loss = (model_output - target) ** 2
+
+        # Exponential decay outside anatomy
+        outside_weights = torch.exp(-self.alpha * dist_map)
+
+        weights = torch.where(
+            anat_mask > 0.5,
+            torch.ones_like(reconstruction_loss),  # inside anatomy
+            outside_weights,  # outside anatomy
+        )
+
+        effective_weights = weights * (1 - mask)
+
+        loss = torch.sum(reconstruction_loss * effective_weights) / (
+            torch.sum(effective_weights) + 1e-5
+        )
+
+        return loss
+
+
+class AnatDistGaussWeightedMAEMSELoss(AbstractLoss):
+    def __init__(self, sigma=1.0):
+        super().__init__()
+        self.sigma = sigma
+
+    def forward(
+        self,
+        model_output: torch.Tensor,
+        target: torch.Tensor,
+        anat_mask: torch.Tensor,
+        dist_map: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor:
+
+        reconstruction_loss = (model_output - target) ** 2
+
+        # Exponential decay outside anatomy
+        outside_weights = torch.exp(-(dist_map**2) / (2 * self.sigma**2))
+
+        weights = torch.where(
+            anat_mask > 0.5,
+            torch.ones_like(reconstruction_loss),  # inside anatomy
+            outside_weights,  # outside anatomy
+        )
+
+        effective_weights = weights * (1 - mask)
+
+        loss = torch.sum(reconstruction_loss * effective_weights) / (
+            torch.sum(effective_weights) + 1e-5
+        )
+
+        return loss
+
+
 class AnatWeightedMAEMSELoss(AbstractLoss):
     def __init__(self, _lambda=10.0):
         super().__init__()
