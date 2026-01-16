@@ -5,7 +5,9 @@ import numpy as np
 import torch
 from torch import nn
 from torch.optim.adamw import AdamW
-from batchgenerators.dataloading.single_threaded_augmenter import SingleThreadedAugmenter
+from batchgenerators.dataloading.single_threaded_augmenter import (
+    SingleThreadedAugmenter,
+)
 from batchgenerators.transforms.abstract_transforms import AbstractTransform, Compose
 from batchgenerators.transforms.utility_transforms import NumpyToTensor
 
@@ -22,7 +24,9 @@ from einops import rearrange
 
 
 from nnssl.experiment_planning.experiment_planners.plan import ConfigurationPlan, Plan
-from nnssl.ssl_data.configure_basic_dummyDA import configure_rotation_dummyDA_mirroring_and_inital_patch_size
+from nnssl.ssl_data.configure_basic_dummyDA import (
+    configure_rotation_dummyDA_mirroring_and_inital_patch_size,
+)
 from nnssl.ssl_data.dataloading.voco_transform import VocoTransform
 from nnssl.ssl_data.limited_len_wrapper import LimitedLenWrapper
 
@@ -30,6 +34,14 @@ from nnssl.ssl_data.limited_len_wrapper import LimitedLenWrapper
 from nnssl.training.nnsslTrainer.AbstractTrainer import AbstractBaseTrainer
 
 from nnssl.utilities.default_n_proc_DA import get_allowed_n_proc_DA
+
+from nnssl.training.lr_scheduler.warmup import (
+    Lin_incr_LRScheduler,
+    PolyLRScheduler_offset,
+)
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch._dynamo import OptimizedModule
+from nnssl.utilities.helpers import empty_cache
 
 
 class VoCoTrainer(AbstractBaseTrainer):
@@ -106,7 +118,9 @@ class VoCoTrainer(AbstractBaseTrainer):
 
     def build_loss(self) -> nn.Module:
         """Implements the VoCo loss, which forces rep similarity to be proportional to the volumetric overlap and for non-overlapping base crops to be orthogonal."""
-        return VoCoLoss(pred_weight=self.pred_loss_weight, reg_weight=self.reg_loss_weight)
+        return VoCoLoss(
+            pred_weight=self.pred_loss_weight, reg_weight=self.reg_loss_weight
+        )
 
     def get_training_transforms(
         self,
@@ -121,7 +135,9 @@ class VoCoTrainer(AbstractBaseTrainer):
         tr_transforms = []
 
         if do_dummy_2d_data_aug:
-            raise NotImplementedError("We don't do dummy 2d aug here anymore. Data should be isotropic!")
+            raise NotImplementedError(
+                "We don't do dummy 2d aug here anymore. Data should be isotropic!"
+            )
 
         # --------------------------- VoCo Transformation --------------------------- #
         # All train augmentations are moved to the VoCoTransform class.
@@ -137,7 +153,9 @@ class VoCoTrainer(AbstractBaseTrainer):
         )
         # From here on out we are working with base crops and target crops!
 
-        tr_transforms.append(NumpyToTensor(["all_crops", "base_target_crop_overlaps"], "float"))
+        tr_transforms.append(
+            NumpyToTensor(["all_crops", "base_target_crop_overlaps"], "float")
+        )
         tr_transforms = Compose(tr_transforms)
         return tr_transforms
 
@@ -155,7 +173,9 @@ class VoCoTrainer(AbstractBaseTrainer):
             )
         )
 
-        val_transforms.append(NumpyToTensor(["all_crops", "base_target_crop_overlaps"], "float"))
+        val_transforms.append(
+            NumpyToTensor(["all_crops", "base_target_crop_overlaps"], "float")
+        )
         val_transforms = Compose(val_transforms)
         return val_transforms
 
@@ -215,7 +235,10 @@ class VoCoTrainer(AbstractBaseTrainer):
         return mt_gen_train, mt_gen_val
 
     def build_architecture_and_adaptation_plan(
-        self, config_plan: ConfigurationPlan, num_input_channels: int, num_output_channels: int
+        self,
+        config_plan: ConfigurationPlan,
+        num_input_channels: int,
+        num_output_channels: int,
     ) -> nn.Module:
         encoder = get_network_by_name(
             config_plan,
@@ -237,7 +260,10 @@ class VoCoTrainer(AbstractBaseTrainer):
             pretrain_num_input_channels=num_input_channels,
             key_to_encoder="encoder.stages",
             key_to_stem="encoder.stem",
-            keys_to_in_proj=("encoder.stem.convs.0.conv", "encoder.stem.convs.0.all_modules.0"),
+            keys_to_in_proj=(
+                "encoder.stem.convs.0.conv",
+                "encoder.stem.convs.0.all_modules.0",
+            ),
         )
         return architecture, adapt_plan
 
@@ -254,10 +280,18 @@ class VoCoTrainer(AbstractBaseTrainer):
         # If the device_type is 'cpu' then it's slow as heck and needs to be disabled.
         # If the device_type is 'mps' then it will complain that mps is not implemented, even if enabled=False is set. Whyyyyyyy. (this is why we don't make use of enabled=False)
         # So autocast will only be active if we have a cuda device.
-        with autocast(self.device.type, enabled=True) if self.device.type == "cuda" else dummy_context():
+        with (
+            autocast(self.device.type, enabled=True)
+            if self.device.type == "cuda"
+            else dummy_context()
+        ):
             embeddings = self.network(all_crops)
-            base_embeddings = rearrange(embeddings[:NBASE], "(b NBASE) c -> b NBASE c", b=self.batch_size)
-            target_embeddings = rearrange(embeddings[NBASE:], "(b nTARGET) c -> b nTARGET c", b=self.batch_size)
+            base_embeddings = rearrange(
+                embeddings[:NBASE], "(b NBASE) c -> b NBASE c", b=self.batch_size
+            )
+            target_embeddings = rearrange(
+                embeddings[NBASE:], "(b nTARGET) c -> b nTARGET c", b=self.batch_size
+            )
 
             # del data
             l = self.loss(base_embeddings, target_embeddings, gt_overlaps)
@@ -287,12 +321,22 @@ class VoCoTrainer(AbstractBaseTrainer):
         # If the device_type is 'mps' then it will complain that mps is not implemented, even if enabled=False is set. Whyyyyyyy. (this is why we don't make use of enabled=False)
         # So autocast will only be active if we have a cuda device.
         with torch.no_grad():
-            with autocast(self.device.type, enabled=True) if self.device.type == "cuda" else dummy_context():
+            with (
+                autocast(self.device.type, enabled=True)
+                if self.device.type == "cuda"
+                else dummy_context()
+            ):
                 embeddings = self.network(all_crops)
                 # base_embeddings = embeddings[:NBASE]
                 # target_embeddings = embeddings[NBASE:]
-                base_embeddings = rearrange(embeddings[:NBASE], "(b NBASE) c -> b NBASE c ", b=self.batch_size)
-                target_embeddings = rearrange(embeddings[NBASE:], "(b nTARGET) c -> b nTARGET c", b=self.batch_size)
+                base_embeddings = rearrange(
+                    embeddings[:NBASE], "(b NBASE) c -> b NBASE c ", b=self.batch_size
+                )
+                target_embeddings = rearrange(
+                    embeddings[NBASE:],
+                    "(b nTARGET) c -> b nTARGET c",
+                    b=self.batch_size,
+                )
 
                 # del data
                 l = self.loss(base_embeddings, target_embeddings, gt_overlaps)
@@ -303,6 +347,224 @@ class VoCoTrainer(AbstractBaseTrainer):
 ####################################################################
 ############################# VARIANTS #############################
 ####################################################################
+
+
+class VoCoTrainer_warmup50ep(VoCoTrainer):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device = torch.device("cuda"),
+        patch_size=(192, 192, 192),
+        base_crop_count: tuple = (2, 2, 2),
+    ):
+
+        super(VoCoTrainer_warmup50ep, self).__init__(
+            plan,
+            configuration_name,
+            fold,
+            pretrain_json,
+            device,
+            patch_size=patch_size,
+            base_crop_count=base_crop_count,
+        )
+
+        # Fix the input patch size
+        self.config_plan.patch_size = patch_size
+        plan.configurations[configuration_name].patch_size = patch_size
+
+        ###settings taken from fabi
+        self.drop_path_rate = 0.2
+        self.attention_drop_rate = 0
+        self.grad_clip = 1
+        self.initial_lr = 3e-4
+        self.weight_decay = 5e-2
+        self.enable_deep_supervision = False
+        self.warmup_duration_whole_net = 50  # lin increase whole network
+        self.training_stage = None
+
+    def configure_optimizers(self, stage: str = "warmup_all"):
+        """
+        Two-stage training:
+        1) warmup_all  → linear LR warmup for `warmup_duration_whole_net` epochs
+        2) train       → poly LR decay starting AFTER warmup
+        """
+        assert stage in ["warmup_all", "train"]
+
+        # If already in this stage, return existing schedulers
+        if self.training_stage == stage:
+            return self.optimizer, self.lr_scheduler
+
+        # Select parameters (DDP-safe)
+        if isinstance(self.network, DDP):
+            params = self.network.module.parameters()
+        else:
+            params = self.network.parameters()
+
+        # -------------------------------
+        # 1) WARMUP STAGE
+        # -------------------------------
+        if stage == "warmup_all":
+            self.print_to_log_file("train whole net → WARMUP stage")
+
+            # fresh optimizer
+            optimizer = torch.optim.AdamW(
+                params,
+                lr=self.initial_lr,
+                weight_decay=self.weight_decay,
+                betas=(0.9, 0.98),
+                amsgrad=False,
+                fused=True,
+            )
+
+            # linear warmup → reaches initial_lr at warmup_duration_whole_net
+            lr_scheduler = Lin_incr_LRScheduler(
+                optimizer,
+                max_lr=self.initial_lr,
+                max_steps=self.warmup_duration_whole_net,
+            )
+
+            self.print_to_log_file(
+                f"[Warmup] Initialized at epoch {self.current_epoch}"
+            )
+
+        # -------------------------------
+        # 2) TRAIN STAGE (after warmup)
+        # -------------------------------
+        else:
+            self.print_to_log_file("train whole net → TRAIN stage")
+
+            # If transitioning warmup → train:
+            if self.training_stage == "warmup_all":
+                # keep optimizer from warmup (preserve momentum)
+                optimizer = self.optimizer
+                self.print_to_log_file(
+                    "Reusing optimizer from warmup (momentum preserved)."
+                )
+            else:
+                # If train is called directly (no warmup)
+                optimizer = torch.optim.AdamW(
+                    params,
+                    lr=self.initial_lr,
+                    weight_decay=self.weight_decay,
+                    betas=(0.9, 0.98),
+                    amsgrad=False,
+                    fused=True,
+                )
+
+            # Poly LR decay starting AFTER warmup duration
+            lr_scheduler = PolyLRScheduler_offset(
+                optimizer=optimizer,
+                initial_lr=self.initial_lr,
+                max_steps=self.num_epochs,
+                start_step=self.warmup_duration_whole_net,
+            )
+
+            self.print_to_log_file(f"[Train] Initialized at epoch {self.current_epoch}")
+
+        # Update state
+        self.training_stage = stage
+        empty_cache(self.device)
+
+        # Store inside object so next call knows what's already set
+        self.optimizer = optimizer
+        self.lr_scheduler = lr_scheduler
+
+        return optimizer, lr_scheduler
+
+    def on_train_epoch_start(self):
+        if self.current_epoch == 0:
+            self.optimizer, self.lr_scheduler = self.configure_optimizers("warmup_all")
+        elif self.current_epoch == self.warmup_duration_whole_net:
+            self.optimizer, self.lr_scheduler = self.configure_optimizers("train")
+
+        super().on_train_epoch_start()
+
+    def load_checkpoint(self, filename_or_checkpoint: Union[dict, str]) -> None:
+        if not self.was_initialized:
+            self.initialize()
+
+        if isinstance(filename_or_checkpoint, str):
+            checkpoint = torch.load(filename_or_checkpoint, map_location=self.device)
+        # if state dict comes from nn.DataParallel but we use non-parallel model here then the state dict keys do not
+        # match. Use heuristic to make it match
+        new_state_dict = {}
+        for k, value in checkpoint["network_weights"].items():
+            key = k
+            if key not in self.network.state_dict().keys() and key.startswith(
+                "module."
+            ):
+                key = key[7:]
+            new_state_dict[key] = value
+
+        self.my_init_kwargs = checkpoint["init_args"]
+
+        self.current_epoch = checkpoint["current_epoch"]
+        min_epoch = self.logger.load_checkpoint(checkpoint["logging"])
+        # Apparently the val log is not written correctly when we currently save the checkpoint.
+        self.current_epoch = min_epoch
+        self._best_ema = checkpoint["_best_ema"]
+
+        # messing with state dict naming schemes. Facepalm.
+        if self.is_ddp:
+            if isinstance(self.network.module, OptimizedModule):
+                self.network.module._orig_mod.load_state_dict(new_state_dict)
+            else:
+                self.network.module.load_state_dict(new_state_dict)
+        else:
+            if isinstance(self.network, OptimizedModule):
+                self.network._orig_mod.load_state_dict(new_state_dict)
+            else:
+                self.network.load_state_dict(new_state_dict)
+
+        # it's fine to do this every time we load because configure_optimizers will be a no-op if the correct optimizer
+        # and lr scheduler are already set up
+        if self.current_epoch < self.warmup_duration_whole_net:
+            self.optimizer, self.lr_scheduler = self.configure_optimizers("warmup_all")
+        else:
+            self.optimizer, self.lr_scheduler = self.configure_optimizers("train")
+
+        self.optimizer.load_state_dict(checkpoint["optimizer_state"])
+        if self.grad_scaler is not None:
+            if checkpoint["grad_scaler_state"] is not None:
+                self.grad_scaler.load_state_dict(checkpoint["grad_scaler_state"])
+
+
+class VoCoTrainer_warmup50ep_BS8(VoCoTrainer_warmup50ep):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device = torch.device("cuda"),
+    ):
+
+        super(VoCoTrainer_warmup50ep_BS8, self).__init__(
+            plan,
+            configuration_name,
+            fold,
+            pretrain_json,
+            device,
+        )
+
+        # Fix the input patch size
+        self.config_plan.patch_size = (160, 160, 160)
+        plan.configurations[configuration_name].patch_size = (160, 160, 160)
+
+        ###settings taken from fabi
+        self.drop_path_rate = 0.2
+        self.attention_drop_rate = 0
+        self.grad_clip = 1
+        self.initial_lr = 3e-4
+        self.weight_decay = 5e-2
+        self.enable_deep_supervision = False
+        self.warmup_duration_whole_net = 50  # lin increase whole network
+        self.training_stage = None
+
+        self.total_batch_size = 8
 
 
 class VoCoTrainer_test(VoCoTrainer):
