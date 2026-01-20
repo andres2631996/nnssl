@@ -1134,6 +1134,80 @@ class BaseMAETrainer_weightedANAT_warmup50ep(BaseMAETrainer_weightedANAT):
                 self.grad_scaler.load_state_dict(checkpoint["grad_scaler_state"])
 
 
+class BaseMAETrainer_weightedANAT_warmup50ep_mask065(
+    BaseMAETrainer_weightedANAT_warmup50ep
+):
+
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device,
+    ):
+
+        super(BaseMAETrainer_weightedANAT_warmup50ep_mask065, self).__init__(
+            plan,
+            configuration_name,
+            fold,
+            pretrain_json,
+            device,
+        )
+        # Fix the input patch size
+        self.config_plan.patch_size = (160, 160, 160)
+
+        ###settings taken from fabi
+        self.drop_path_rate = 0.2
+        self.attention_drop_rate = 0
+        self.grad_clip = 1
+        self.initial_lr = 3e-4
+        self.weight_decay = 5e-2
+        self.enable_deep_supervision = False
+        self.warmup_duration_whole_net = 50  # lin increase whole network
+        self.training_stage = None
+
+        # masking percentage
+        self.mask_percentage = 0.65
+
+
+class BaseMAETrainer_weightedANAT_warmup50ep_mask055(
+    BaseMAETrainer_weightedANAT_warmup50ep
+):
+
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device,
+    ):
+
+        super(BaseMAETrainer_weightedANAT_warmup50ep_mask055, self).__init__(
+            plan,
+            configuration_name,
+            fold,
+            pretrain_json,
+            device,
+        )
+        # Fix the input patch size
+        self.config_plan.patch_size = (160, 160, 160)
+
+        ###settings taken from fabi
+        self.drop_path_rate = 0.2
+        self.attention_drop_rate = 0
+        self.grad_clip = 1
+        self.initial_lr = 3e-4
+        self.weight_decay = 5e-2
+        self.enable_deep_supervision = False
+        self.warmup_duration_whole_net = 50  # lin increase whole network
+        self.training_stage = None
+
+        # masking percentage
+        self.mask_percentage = 0.55
+
+
 class BaseMAETrainer_weightedANAT_ExpWeight_warmup50ep_BS8(
     BaseMAETrainer_weightedANAT_warmup50ep
 ):
@@ -1211,6 +1285,100 @@ class BaseMAETrainer_weightedANAT_ExpWeight_warmup50ep(
         self.training_stage = None
         self.total_batch_size = 2
         self.loss_alpha = 0.5
+
+    def build_loss(self):
+        """
+        This is where you build your loss function. You can use anything from torch.nn here.
+        In general the MAE losses are only applied on regions where the mask is 0.
+
+        :return:
+        """
+        return AnatDistExpWeightedMAEMSELoss(alpha=self.loss_alpha)
+
+
+class BaseMAETrainer_weightedANAT_ExpWeight_warmup50ep_mask065(
+    BaseMAETrainer_weightedANAT_warmup50ep
+):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device,
+    ):
+
+        super(BaseMAETrainer_weightedANAT_ExpWeight_warmup50ep_mask065, self).__init__(
+            plan,
+            configuration_name,
+            fold,
+            pretrain_json,
+            device,
+        )
+        # Fix the input patch size
+        self.config_plan.patch_size = (160, 160, 160)
+
+        ###settings taken from fabi
+        self.drop_path_rate = 0.2
+        self.attention_drop_rate = 0
+        self.grad_clip = 1
+        self.initial_lr = 3e-4
+        self.weight_decay = 5e-2
+        self.enable_deep_supervision = False
+        self.warmup_duration_whole_net = 50  # lin increase whole network
+        self.training_stage = None
+        self.total_batch_size = 2
+        self.loss_alpha = 0.5
+
+        # mask percentage
+        self.mask_percentage = 0.65
+
+    def build_loss(self):
+        """
+        This is where you build your loss function. You can use anything from torch.nn here.
+        In general the MAE losses are only applied on regions where the mask is 0.
+
+        :return:
+        """
+        return AnatDistExpWeightedMAEMSELoss(alpha=self.loss_alpha)
+
+
+class BaseMAETrainer_weightedANAT_ExpWeight_warmup50ep_mask055(
+    BaseMAETrainer_weightedANAT_warmup50ep
+):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device,
+    ):
+
+        super(BaseMAETrainer_weightedANAT_ExpWeight_warmup50ep_mask055, self).__init__(
+            plan,
+            configuration_name,
+            fold,
+            pretrain_json,
+            device,
+        )
+        # Fix the input patch size
+        self.config_plan.patch_size = (160, 160, 160)
+
+        ###settings taken from fabi
+        self.drop_path_rate = 0.2
+        self.attention_drop_rate = 0
+        self.grad_clip = 1
+        self.initial_lr = 3e-4
+        self.weight_decay = 5e-2
+        self.enable_deep_supervision = False
+        self.warmup_duration_whole_net = 50  # lin increase whole network
+        self.training_stage = None
+        self.total_batch_size = 2
+        self.loss_alpha = 0.5
+
+        # mask percentage
+        self.mask_percentage = 0.55
 
     def build_loss(self):
         """
@@ -1308,6 +1476,104 @@ class BaseMAETrainer_weightedANAT_GaussWeight_warmup50ep(
         :return:
         """
         return AnatDistGaussWeightedMAEMSELoss(sigma=self.loss_sigma)
+
+
+class BaseMAETrainer_weightedANAT_GaussWeight_warmup50ep_mask065(
+    BaseMAETrainer_weightedANAT_warmup50ep
+):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device,
+    ):
+
+        super(
+            BaseMAETrainer_weightedANAT_GaussWeight_warmup50ep_mask065, self
+        ).__init__(
+            plan,
+            configuration_name,
+            fold,
+            pretrain_json,
+            device,
+        )
+        # Fix the input patch size
+        self.config_plan.patch_size = (160, 160, 160)
+
+        ###settings taken from fabi
+        self.drop_path_rate = 0.2
+        self.attention_drop_rate = 0
+        self.grad_clip = 1
+        self.initial_lr = 3e-4
+        self.weight_decay = 5e-2
+        self.enable_deep_supervision = False
+        self.warmup_duration_whole_net = 50  # lin increase whole network
+        self.training_stage = None
+        self.total_batch_size = 2
+        self.loss_alpha = 0.5
+
+        # mask percentage
+        self.mask_percentage = 0.65
+
+    def build_loss(self):
+        """
+        This is where you build your loss function. You can use anything from torch.nn here.
+        In general the MAE losses are only applied on regions where the mask is 0.
+
+        :return:
+        """
+        return AnatDistGaussWeightedMAEMSELoss(alpha=self.loss_alpha)
+
+
+class BaseMAETrainer_weightedANAT_GaussWeight_warmup50ep_mask055(
+    BaseMAETrainer_weightedANAT_warmup50ep
+):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device,
+    ):
+
+        super(
+            BaseMAETrainer_weightedANAT_GaussWeight_warmup50ep_mask055, self
+        ).__init__(
+            plan,
+            configuration_name,
+            fold,
+            pretrain_json,
+            device,
+        )
+        # Fix the input patch size
+        self.config_plan.patch_size = (160, 160, 160)
+
+        ###settings taken from fabi
+        self.drop_path_rate = 0.2
+        self.attention_drop_rate = 0
+        self.grad_clip = 1
+        self.initial_lr = 3e-4
+        self.weight_decay = 5e-2
+        self.enable_deep_supervision = False
+        self.warmup_duration_whole_net = 50  # lin increase whole network
+        self.training_stage = None
+        self.total_batch_size = 2
+        self.loss_alpha = 0.5
+
+        # mask percentage
+        self.mask_percentage = 0.55
+
+    def build_loss(self):
+        """
+        This is where you build your loss function. You can use anything from torch.nn here.
+        In general the MAE losses are only applied on regions where the mask is 0.
+
+        :return:
+        """
+        return AnatDistGaussWeightedMAEMSELoss(alpha=self.loss_alpha)
 
 
 class BaseMAETrainer_weightedANAT_warmup50ep_lr1e2_BS8(
