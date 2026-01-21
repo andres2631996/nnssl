@@ -9,6 +9,7 @@ from torch._dynamo import OptimizedModule
 from nnssl.utilities.helpers import empty_cache
 
 import torch
+import torch.nn.functional as F
 from nnssl.adaptation_planning.adaptation_plan import (
     AdaptationPlan,
     ArchitecturePlans,
@@ -67,7 +68,7 @@ from nnssl.training.lr_scheduler.warmup import (
     Lin_incr_LRScheduler,
     PolyLRScheduler_offset,
 )
-
+from batchgenerators.utilities.file_and_folder_operations import load_json
 
 def create_blocky_mask(
     tensor_size, block_size, sparsity_factor=0.75, rng_seed: None | int = None
@@ -1207,6 +1208,344 @@ class BaseMAETrainer_weightedANAT_warmup50ep_mask055(
         # masking percentage
         self.mask_percentage = 0.55
 
+
+class BaseMAETrainer_weightedANAT_warmup50ep_featLoss(BaseMAETrainer_weightedANAT_warmup50ep):
+
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device,
+    ):
+
+        super(BaseMAETrainer_weightedANAT_warmup50ep_featLoss, self).__init__(
+            plan,
+            configuration_name,
+            fold,
+            pretrain_json,
+            device,
+        )
+        # Fix the input patch size
+        self.config_plan.patch_size = (160, 160, 160)
+
+        ###settings taken from fabi
+        self.drop_path_rate = 0.2
+        self.attention_drop_rate = 0
+        self.grad_clip = 1
+        self.initial_lr = 3e-4
+        self.weight_decay = 5e-2
+        self.enable_deep_supervision = False
+        self.warmup_duration_whole_net = 50  # lin increase whole network
+        self.training_stage = None
+
+        self.plan = plan
+        self.configuration_name = configuration_name
+        self.device = device
+
+    def build_teacher(self):
+        assert self.plan["teacher"] is not None, "Teacher model is not defined"
+        assert os.path.exists(self.plan["teacher"]), f"Teacher model folder '{self.plan["teacher"]}' does not exist"
+        teacher_cfg_file = os.path.join(self.plan["teacher"], "plans.json")
+
+        teacher_data_file = os.path.join(self.plan["teacher"], "dataset.json")
+
+        # Load teacher configuration
+        teacher_cfg = load_json(teacher_cfg_file)
+        teacher_cfg = teacher_cfg["configurations"]["3d_fullres"]
+        arch_cfg = teacher_cfg["architecture"]
+
+        # Load teacher dataset information
+        dataset_cfg = load_json(teacher_data_file)
+
+        # Load teacher network
+        teacher_network = get_network_from_plans(arch_class_name=arch_cfg["network_class_name"],
+                                                 arch_kwargs=arch_cfg["arch_kwargs"],
+                                                 arch_kwargs_req_import=arch_cfg["_kw_requires_import"],
+                                                 input_channels=1,
+                                                 output_channels=len(list(dataset_cfg["labels"].keys())),
+                                                 allow_init=True,
+                                                 deep_supervision=False).to(self.device)
+        
+        return teacher_network
+    
+
+    def load_teacher_checkpoint(self):
+        ckpt_path = os.path.join(self.plan["teacher"],"fold_all","checkpoint_final.pth")
+        assert os.path.exists(ckpt_path), f"Checkpoint path '{ckpt_path}' does not exist"
+
+        ckpt = torch.load(ckpt_path, map_location=self.device, weights_only=False)
+
+        state_dict = {
+            k[7:] if k.startswith("module.") else k: v
+            for k, v in ckpt["network_weights"].items()
+        }
+
+        self.teacher_network.load_state_dict(state_dict, strict=True)
+
+        self.teacher_network.eval()
+        for p in self.teacher_network.parameters():
+            p.requires_grad = False
+
+        return self.teacher_network
+
+
+    def initialize(self):
+        super(BaseMAETrainer_weightedANAT_warmup50ep_featLoss, self).initialize()
+
+        # ----------------------------
+        # Build & load teacher
+        # ----------------------------
+        self.teacher_network = self.build_teacher()
+        self.teacher_network = self.load_teacher_checkpoint()
+        self.print_to_log_file("Teacher loaded and frozen.")
+
+        # ----------------------------
+        # Feature buffers
+        # ----------------------------
+        self.student_features = {}
+        self.teacher_features = {}
+
+        def save_feature(store, name):
+            def hook(_, __, out):
+                store[name] = out
+            return hook
+
+        # ----------------------------
+        # Hook deepest encoder block
+        # ----------------------------
+        student_net = self.network.module if self.is_ddp else self.network
+        teacher_net = self.teacher_network
+
+        # Student: get last block of last stage
+        student_stage = student_net.encoder.stages[-1]
+        if hasattr(student_stage, "blocks"):
+            student_block = student_stage.blocks[-1]
+        else:
+            student_block = list(student_stage.children())[-1]
+
+        # Teacher: get last block of last stage
+        teacher_stage = teacher_net.encoder.stages[-1]
+        if hasattr(teacher_stage, "blocks"):
+            teacher_block = teacher_stage.blocks[-1]
+        else:
+            teacher_block = list(teacher_stage.children())[-1]
+
+        student_layer_name = "student.encoder.stages[-1].blocks[-1]"
+        teacher_layer_name = "teacher.encoder.stages[-1].blocks[-1]"
+
+        student_block.register_forward_hook(save_feature(self.student_features, student_layer_name))
+        teacher_block.register_forward_hook(save_feature(self.teacher_features, teacher_layer_name))
+
+        # ----------------------------
+        # Projection head (student -> teacher channels)
+        # ----------------------------
+        with torch.no_grad():
+            dummy = torch.zeros(
+                1, 1, *self.config_plan.patch_size, device=self.device
+            )
+            _ = student_net(dummy)
+            _ = teacher_net(dummy)
+
+            student_C = self.student_features[student_layer_name].shape[1]
+            teacher_C = self.teacher_features[teacher_layer_name].shape[1]
+
+            # clear buffers after dummy pass
+            self.student_features.clear()
+            self.teacher_features.clear()
+
+        self.student_proj = nn.Sequential(
+            nn.Conv3d(student_C, teacher_C, kernel_size=1, bias=False),
+            nn.InstanceNorm3d(teacher_C, affine=False),
+        ).to(self.device)
+
+        # ----------------------------
+        # Distillation config
+        # ----------------------------
+        self.target_frac = 0.1 
+        self.print_to_log_file(
+            "Distillation enabled"
+            f"warmup = {self.warmup_duration_whole_net} epochs"
+        )
+
+
+    def train_step(self, batch: dict) -> dict:
+        # ----------------------------
+        # Clear feature buffers
+        # ----------------------------
+        self.student_features.clear()
+        self.teacher_features.clear()
+
+        # ----------------------------
+        # Data loading
+        # ----------------------------
+        data = batch["data"]
+        dist = data[:, -1].to(self.device, non_blocking=True).unsqueeze(1)
+        data = data[:, 0].to(self.device, non_blocking=True).unsqueeze(1)
+        anat = batch["seg"].to(self.device, non_blocking=True)
+
+        mask = self.mask_creation(
+            self.batch_size, self.config_plan.patch_size, self.mask_percentage
+        ).to(self.device, non_blocking=True)
+        rep_D, rep_H, rep_W = (
+            data.shape[2] // mask.shape[2],
+            data.shape[3] // mask.shape[3],
+            data.shape[4] // mask.shape[4],
+        )
+        mask = mask.repeat_interleave(rep_D, dim=2).repeat_interleave(rep_H, dim=3).repeat_interleave(rep_W, dim=4)
+        masked_data = data * mask
+
+        self.optimizer.zero_grad(set_to_none=True)
+
+        with torch.no_grad():
+            _ = self.teacher_network(data)
+
+        # ----------------------------
+        # Forward pass
+        # ----------------------------
+        student_layer_name = "student.encoder.stages[-1].blocks[-1]"
+        teacher_layer_name = "teacher.encoder.stages[-1].blocks[-1]"
+        with autocast(self.device.type, enabled=(self.device.type=="cuda")) if self.device.type=="cuda" else dummy_context():
+            # Student
+            student_out = self.network(masked_data)
+            recon_loss = self.loss(student_out, data, anat, dist, mask)
+
+            # Feature distillation
+            feat_loss = torch.tensor(0.0, device=self.device)
+            lambda_dyn = 0.0
+
+            if self.current_epoch >= self.warmup_duration_whole_net:
+                student_feat = self.student_features[student_layer_name]
+                teacher_feat = self.teacher_features[teacher_layer_name]
+
+                # Resize teacher features to match student
+                teacher_feat = F.interpolate(
+                    teacher_feat,
+                    size=student_feat.shape[2:],
+                    mode="trilinear",
+                    align_corners=False
+                )
+
+                student_feat = self.student_proj(student_feat)
+                feat_loss = F.mse_loss(student_feat, teacher_feat)
+
+                # Dynamical lambda balancing
+                lambda_dyn = self.target_frac * recon_loss.detach() / (feat_loss.detach() + 1e-8)
+
+            total_loss = recon_loss + lambda_dyn * feat_loss
+
+        # ----------------------------
+        # Backprop
+        # ----------------------------
+        if self.grad_scaler is not None:
+            self.grad_scaler.scale(total_loss).backward()
+            self.grad_scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
+            self.grad_scaler.step(self.optimizer)
+            self.grad_scaler.update()
+        else:
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
+            self.optimizer.step()
+
+        return {
+            "loss": total_loss.detach().cpu().numpy(),
+            "recon_loss": recon_loss.detach().cpu().numpy(),
+            "feat_loss": feat_loss.detach().cpu().numpy()
+        } 
+        
+
+class BaseMAETrainer_weightedANAT_GaussWeight_warmup50ep_featLoss(
+    BaseMAETrainer_weightedANAT_warmup50ep_featLoss
+):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device,
+    ):
+
+        super(BaseMAETrainer_weightedANAT_GaussWeight_warmup50ep_featLoss, self).__init__(
+            plan,
+            configuration_name,
+            fold,
+            pretrain_json,
+            device,
+        )
+        # Fix the input patch size
+        self.config_plan.patch_size = (160, 160, 160)
+
+        ###settings taken from fabi
+        self.drop_path_rate = 0.2
+        self.attention_drop_rate = 0
+        self.grad_clip = 1
+        self.initial_lr = 3e-4
+        self.weight_decay = 5e-2
+        self.enable_deep_supervision = False
+        self.warmup_duration_whole_net = 50  # lin increase whole network
+        self.training_stage = None
+
+        self.plan = plan
+        self.configuration_name = configuration_name
+        self.device = device
+
+    def build_loss(self):
+        """
+        This is where you build your loss function. You can use anything from torch.nn here.
+        In general the MAE losses are only applied on regions where the mask is 0.
+
+        :return:
+        """
+        return AnatDistGaussWeightedMAEMSELoss(sigma=self.loss_sigma)
+
+
+class BaseMAETrainer_weightedANAT_ExpWeight_warmup50ep_featLoss(
+    BaseMAETrainer_weightedANAT_warmup50ep_featLoss
+):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device,
+    ):
+
+        super(BaseMAETrainer_weightedANAT_ExpWeight_warmup50ep_featLoss, self).__init__(
+            plan,
+            configuration_name,
+            fold,
+            pretrain_json,
+            device,
+        )
+        # Fix the input patch size
+        self.config_plan.patch_size = (160, 160, 160)
+
+        ###settings taken from fabi
+        self.drop_path_rate = 0.2
+        self.attention_drop_rate = 0
+        self.grad_clip = 1
+        self.initial_lr = 3e-4
+        self.weight_decay = 5e-2
+        self.enable_deep_supervision = False
+        self.warmup_duration_whole_net = 50  # lin increase whole network
+        self.training_stage = None
+
+        self.plan = plan
+        self.configuration_name = configuration_name
+        self.device = device
+
+    def build_loss(self):
+        """
+        This is where you build your loss function. You can use anything from torch.nn here.
+        In general the MAE losses are only applied on regions where the mask is 0.
+
+        :return:
+        """
+        return AnatDistExpWeightedMAEMSELoss(sigma=self.loss_sigma)
 
 class BaseMAETrainer_weightedANAT_ExpWeight_warmup50ep_BS8(
     BaseMAETrainer_weightedANAT_warmup50ep

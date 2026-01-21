@@ -13,7 +13,10 @@ import torch.cuda
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from batchgenerators.utilities.file_and_folder_operations import join, isfile, load_json
-from nnssl.experiment_planning.experiment_planners.plan import Plan, PREPROCESS_SPACING_STYLES
+from nnssl.experiment_planning.experiment_planners.plan import (
+    Plan,
+    PREPROCESS_SPACING_STYLES,
+)
 from nnssl.paths import nnssl_preprocessed
 from nnssl.run.load_pretrained_weights import load_pretrained_weights
 from nnssl.training.nnsslTrainer.AbstractTrainer import AbstractBaseTrainer
@@ -42,10 +45,13 @@ def get_trainer_from_args(
     trainer_name: str = "nnsslTrainer",
     plans_identifier: str = "nnsslPlans",
     device: torch.device = torch.device("cuda"),
+    teacher: str = None,
 ):
     # load nnunet class and do sanity checks
     nnssl_trainer_cls: Type[AbstractBaseTrainer] = recursive_find_python_class(
-        join(nnssl.__path__[0], "training", "nnsslTrainer"), trainer_name, "nnssl.training.nnsslTrainer"
+        join(nnssl.__path__[0], "training", "nnsslTrainer"),
+        trainer_name,
+        "nnssl.training.nnsslTrainer",
     )
     if nnssl_trainer_cls is None:
         raise RuntimeError(
@@ -72,10 +78,18 @@ def get_trainer_from_args(
             )
 
     # initialize nnunet trainer
-    preprocessed_dataset_folder_base = join(nnssl_preprocessed, maybe_convert_to_dataset_name(dataset_name_or_id))
+    preprocessed_dataset_folder_base = join(
+        nnssl_preprocessed, maybe_convert_to_dataset_name(dataset_name_or_id)
+    )
     plans_file = join(preprocessed_dataset_folder_base, plans_identifier + ".json")
     plans: Plan = Plan.load_from_file(plans_file)
-    pretrain_json = load_json(join(preprocessed_dataset_folder_base, f"pretrain_data__{configuration}.json"))
+    pretrain_json = load_json(
+        join(preprocessed_dataset_folder_base, f"pretrain_data__{configuration}.json")
+    )
+
+    # Include teacher information in plan
+    plans["teacher"] = teacher
+
     nnssl_trainer: AbstractBaseTrainer = nnssl_trainer_cls(
         plan=plans,
         configuration_name=configuration,
@@ -100,12 +114,18 @@ def maybe_load_checkpoint(
 
     if continue_training:
         logger.info("Attempting to continue training...")
-        expected_checkpoint_file = join(nnunet_trainer.output_folder, "checkpoint_final.pth")
+        expected_checkpoint_file = join(
+            nnunet_trainer.output_folder, "checkpoint_final.pth"
+        )
         if not isfile(expected_checkpoint_file):
-            expected_checkpoint_file = join(nnunet_trainer.output_folder, "checkpoint_latest.pth")
+            expected_checkpoint_file = join(
+                nnunet_trainer.output_folder, "checkpoint_latest.pth"
+            )
         # special case where --c is used to run a previously aborted validation
         if not isfile(expected_checkpoint_file):
-            expected_checkpoint_file = join(nnunet_trainer.output_folder, "checkpoint_best.pth")
+            expected_checkpoint_file = join(
+                nnunet_trainer.output_folder, "checkpoint_best.pth"
+            )
         # if not isfile(expected_checkpoint_file):
         #     print(
         #         f"WARNING: Cannot continue training because there seems to be no checkpoint available to "
@@ -115,19 +135,27 @@ def maybe_load_checkpoint(
         #     f"Cannot continue training because there seems to be no checkpoint available to continue from. Starting a new training..."
         # )
         if isfile(expected_checkpoint_file):
-            logger.info(f"Using {expected_checkpoint_file} as the starting checkpoint for training...")
+            logger.info(
+                f"Using {expected_checkpoint_file} as the starting checkpoint for training..."
+            )
         else:
             expected_checkpoint_file = None
             logger.info(f"No starting checkpoint available, starting a new training...")
     elif validation_only:
-        expected_checkpoint_file = join(nnunet_trainer.output_folder, "checkpoint_final.pth")
+        expected_checkpoint_file = join(
+            nnunet_trainer.output_folder, "checkpoint_final.pth"
+        )
         if not isfile(expected_checkpoint_file):
-            raise RuntimeError(f"Cannot run validation because the training is not finished yet!")
+            raise RuntimeError(
+                f"Cannot run validation because the training is not finished yet!"
+            )
     else:
         if pretrained_weights_file is not None:
             if not nnunet_trainer.was_initialized:
                 nnunet_trainer.initialize()
-            load_pretrained_weights(nnunet_trainer.network, pretrained_weights_file, verbose=True)
+            load_pretrained_weights(
+                nnunet_trainer.network, pretrained_weights_file, verbose=True
+            )
         expected_checkpoint_file = None
 
     if expected_checkpoint_file is not None:
@@ -140,7 +168,9 @@ def maybe_load_checkpoint(
 def setup_ddp(rank, world_size):
     # initialize the process group
     # Unpacking actually takes about
-    dist.init_process_group("nccl", rank=rank, world_size=world_size, timeout=timedelta(minutes=25))
+    dist.init_process_group(
+        "nccl", rank=rank, world_size=world_size, timeout=timedelta(minutes=25)
+    )
 
 
 def cleanup_ddp():
@@ -161,12 +191,15 @@ def run_ddp(
     npz,
     val_with_best,
     world_size,
+    teacher,
 ):
     setup_ddp(rank, world_size)
     torch.cuda.set_device(torch.device("cuda", dist.get_rank()))
 
     device = torch.device(f"cuda:{rank}")
-    nnunet_trainer = get_trainer_from_args(dataset_name_or_id, configuration, fold, tr, p, device)
+    nnunet_trainer = get_trainer_from_args(
+        dataset_name_or_id, configuration, fold, tr, p, device, teacher
+    )
     if disable_checkpointing:
         nnunet_trainer.disable_checkpointing = disable_checkpointing
 
@@ -186,7 +219,9 @@ def run_ddp(
         nnunet_trainer.run_training()
 
     if val_with_best:
-        nnunet_trainer.load_checkpoint(join(nnunet_trainer.output_folder, "checkpoint_best.pth"))
+        nnunet_trainer.load_checkpoint(
+            join(nnunet_trainer.output_folder, "checkpoint_best.pth")
+        )
     nnunet_trainer.perform_actual_validation(npz)
     cleanup_ddp()
 
@@ -205,6 +240,7 @@ def run_training(
     disable_checkpointing: bool = False,
     val_with_best: bool = False,
     device: torch.device = torch.device("cuda"),
+    teacher: str = None,
 ):
     if isinstance(fold, str):
         if fold != "all":
@@ -217,7 +253,9 @@ def run_training(
                 raise e
 
     if val_with_best:
-        assert not disable_checkpointing, "--val_best is not compatible with --disable_checkpointing"
+        assert (
+            not disable_checkpointing
+        ), "--val_best is not compatible with --disable_checkpointing"
 
     if num_gpus > 1:
         assert (
@@ -245,6 +283,7 @@ def run_training(
                 export_validation_probabilities,
                 val_with_best,
                 num_gpus,
+                teacher,
             ),
             nprocs=num_gpus,
             join=True,
@@ -257,6 +296,7 @@ def run_training(
             trainer_class_name,
             plans_identifier,
             device=device,
+            teacher=teacher,
         )
 
         # Prepare the auto-exiting in case wall-time is exceeded.
@@ -270,7 +310,9 @@ def run_training(
             continue_training and only_run_validation
         ), f"Cannot set --c and --val flag at the same time. Dummy."
 
-        maybe_load_checkpoint(nnunet_trainer, continue_training, only_run_validation, pretrained_weights)
+        maybe_load_checkpoint(
+            nnunet_trainer, continue_training, only_run_validation, pretrained_weights
+        )
 
         if torch.cuda.is_available():
             cudnn.deterministic = False
@@ -280,7 +322,9 @@ def run_training(
             nnunet_trainer.run_training()
 
         if val_with_best:
-            nnunet_trainer.load_checkpoint(join(nnunet_trainer.output_folder, "checkpoint_best.pth"))
+            nnunet_trainer.load_checkpoint(
+                join(nnunet_trainer.output_folder, "checkpoint_best.pth")
+            )
         nnunet_trainer.perform_actual_validation(export_validation_probabilities)
 
 
@@ -289,7 +333,9 @@ def run_training_entry():
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("dataset_name_or_id", type=str, help="Dataset name or ID to train with")
+    parser.add_argument(
+        "dataset_name_or_id", type=str, help="Dataset name or ID to train with"
+    )
     parser.add_argument(
         "configuration",
         type=str,
@@ -319,7 +365,11 @@ def run_training_entry():
         "be used when actually training. Beta. Use with caution.",
     )
     parser.add_argument(
-        "-num_gpus", type=int, default=1, required=False, help="Specify the number of GPUs to use for training"
+        "-num_gpus",
+        type=int,
+        default=1,
+        required=False,
+        help="Specify the number of GPUs to use for training",
     )
     parser.add_argument(
         "--npz",
@@ -329,7 +379,10 @@ def run_training_entry():
         "segmentations). Needed for finding the best ensemble.",
     )
     parser.add_argument(
-        "--c", action="store_true", required=False, help="[OPTIONAL] Continue training from latest checkpoint"
+        "--c",
+        action="store_true",
+        required=False,
+        help="[OPTIONAL] Continue training from latest checkpoint",
     )
     parser.add_argument(
         "--val",
@@ -361,6 +414,13 @@ def run_training_entry():
         help="Use this to set the device the training should run with. Available options are 'cuda' "
         "(GPU), 'cpu' (CPU) and 'mps' (Apple M1/M2). Do NOT use this to set which GPU ID! "
         "Use CUDA_VISIBLE_DEVICES=X nnUNetv2_train [...] instead!",
+    )
+    parser.add_argument(
+        "-teacher",
+        type=str,
+        default=None,
+        required=False,
+        help="[OPTIONAL] Use this flag to indicate a teacher model for feature loss training",
     )
     args = parser.parse_args()
 
@@ -406,6 +466,7 @@ def run_training_entry():
         args.disable_checkpointing,
         args.val_best,
         device=device,
+        teacher=args.teacher,
     )
 
 
