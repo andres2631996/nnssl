@@ -1456,6 +1456,44 @@ class BaseMAETrainer_weightedANAT_warmup50ep_featLoss(BaseMAETrainer_weightedANA
         } 
         
 
+class BaseMAETrainer_weightedANAT_warmup50ep_featLoss_BS8(BaseMAETrainer_weightedANAT_warmup50ep_featLoss):
+
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device,
+    ):
+
+        super(BaseMAETrainer_weightedANAT_warmup50ep_featLoss_BS8, self).__init__(
+            plan,
+            configuration_name,
+            fold,
+            pretrain_json,
+            device,
+        )
+        # Fix the input patch size
+        self.config_plan.patch_size = (160, 160, 160)
+
+        ###settings taken from fabi
+        self.drop_path_rate = 0.2
+        self.attention_drop_rate = 0
+        self.grad_clip = 1
+        self.initial_lr = 3e-4
+        self.weight_decay = 5e-2
+        self.enable_deep_supervision = False
+        self.warmup_duration_whole_net = 50  # lin increase whole network
+        self.training_stage = None
+
+        self.plan = plan
+        self.configuration_name = configuration_name
+        self.device = device
+
+        self.total_batch_size = 8
+
+
 class BaseMAETrainer_weightedANAT_GaussWeight_warmup50ep_featLoss(
     BaseMAETrainer_weightedANAT_warmup50ep_featLoss
 ):
@@ -1501,6 +1539,43 @@ class BaseMAETrainer_weightedANAT_GaussWeight_warmup50ep_featLoss(
         """
         return AnatDistGaussWeightedMAEMSELoss(sigma=self.loss_sigma)
 
+class BaseMAETrainer_weightedANAT_GaussWeight_warmup50ep_featLoss_BS8(
+    BaseMAETrainer_weightedANAT_GaussWeight_warmup50ep_featLoss
+):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device,
+    ):
+
+        super(BaseMAETrainer_weightedANAT_GaussWeight_warmup50ep_featLoss_BS8, self).__init__(
+            plan,
+            configuration_name,
+            fold,
+            pretrain_json,
+            device,
+        )
+        # Fix the input patch size
+        self.config_plan.patch_size = (160, 160, 160)
+
+        ###settings taken from fabi
+        self.drop_path_rate = 0.2
+        self.attention_drop_rate = 0
+        self.grad_clip = 1
+        self.initial_lr = 3e-4
+        self.weight_decay = 5e-2
+        self.enable_deep_supervision = False
+        self.warmup_duration_whole_net = 50  # lin increase whole network
+        self.training_stage = None
+
+        self.plan = plan
+        self.configuration_name = configuration_name
+        self.device = device
+
+        self.total_batch_size = 8
 
 class BaseMAETrainer_weightedANAT_ExpWeight_warmup50ep_featLoss(
     BaseMAETrainer_weightedANAT_warmup50ep_featLoss
@@ -1590,6 +1665,44 @@ class BaseMAETrainer_weightedANAT_ExpWeight_warmup50ep_BS8(
         """
         return AnatDistExpWeightedMAEMSELoss(alpha=self.loss_alpha)
 
+
+class BaseMAETrainer_weightedANAT_ExpWeight_warmup50ep_featLoss_BS8(
+    BaseMAETrainer_weightedANAT_ExpWeight_warmup50ep_featLoss
+):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device,
+    ):
+
+        super(BaseMAETrainer_weightedANAT_ExpWeight_warmup50ep_featLoss_BS8, self).__init__(
+            plan,
+            configuration_name,
+            fold,
+            pretrain_json,
+            device,
+        )
+        # Fix the input patch size
+        self.config_plan.patch_size = (160, 160, 160)
+
+        ###settings taken from fabi
+        self.drop_path_rate = 0.2
+        self.attention_drop_rate = 0
+        self.grad_clip = 1
+        self.initial_lr = 3e-4
+        self.weight_decay = 5e-2
+        self.enable_deep_supervision = False
+        self.warmup_duration_whole_net = 50  # lin increase whole network
+        self.training_stage = None
+
+        self.plan = plan
+        self.configuration_name = configuration_name
+        self.device = device
+
+        self.total_batch_size = 8
 
 class BaseMAETrainer_weightedANAT_ExpWeight_warmup50ep(
     BaseMAETrainer_weightedANAT_warmup50ep
