@@ -43,6 +43,7 @@ from nnssl.training.loss.mse_loss import (
     AnatWeightedMAEMSELoss,
     AnatDistExpWeightedMAEMSELoss,
     AnatDistGaussWeightedMAEMSELoss,
+    AnatWeightedMAEMSELoss_lowerOutside
 )
 from nnssl.training.nnsslTrainer.AbstractTrainer import AbstractBaseTrainer
 from torch import nn
@@ -2476,6 +2477,32 @@ class BaseMAETrainer_dilatedANAT(BaseMAETrainer):
         return {"loss": l.detach().cpu().numpy()}
 
 
+class BaseMAETrainer_dilatedANAToutside(
+    BaseMAETrainer_dilatedANAT
+):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device = torch.device("cuda"),
+    ):
+        super().__init__(plan, configuration_name, fold, pretrain_json, device)
+        
+
+    def build_loss(self):
+        """
+        This is where you build your loss function. You can use anything from torch.nn here.
+        In general the MAE losses are only applied on regions where the mask is 0.
+
+        :return:
+        """
+        _lambda = 0.1
+        return AnatWeightedMAEMSELoss_lowerOutside(_lambda=_lambda)
+    
+
+
 class BaseMAETrainer_dilatedANAT_BS8(BaseMAETrainer_dilatedANAT):
     def __init__(
         self,
@@ -2679,6 +2706,51 @@ class BaseMAETrainer_dilatedANAT_warmup50ep_BS8(BaseMAETrainer_dilatedANAT_warmu
         super().__init__(plan, configuration_name, fold, pretrain_json, device)
         self.total_batch_size = 8
 
+
+class BaseMAETrainer_dilatedANAToutside_warmup50ep(
+    BaseMAETrainer_dilatedANAT_warmup50ep
+):
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device,
+    ):
+
+        super(BaseMAETrainer_dilatedANAToutside_warmup50ep, self).__init__(
+            plan,
+            configuration_name,
+            fold,
+            pretrain_json,
+            device,
+        )
+        # Fix the input patch size
+        self.config_plan.patch_size = (160, 160, 160)
+
+        ###settings taken from fabi
+        self.drop_path_rate = 0.2
+        self.attention_drop_rate = 0
+        self.grad_clip = 1
+        self.initial_lr = 3e-4
+        self.weight_decay = 5e-2
+        self.enable_deep_supervision = False
+        self.warmup_duration_whole_net = 50  # lin increase whole network
+        self.training_stage = None
+        
+
+    def build_loss(self):
+        """
+        This is where you build your loss function. You can use anything from torch.nn here.
+        In general the MAE losses are only applied on regions where the mask is 0.
+
+        :return:
+        """
+        _lambda = 0.1
+        return AnatWeightedMAEMSELoss_lowerOutside(_lambda=_lambda)
+    
+    
 
 class BaseMAETrainer_ANON(BaseMAETrainer):
 

@@ -273,6 +273,41 @@ class AnatWeightedMAEMSELoss(AbstractLoss):
         return reconstruction_loss
 
 
+class AnatWeightedMAEMSELoss_lowerOutside(AbstractLoss):
+    def __init__(self, _lambda=0.1):
+        super().__init__()
+        self.loss = nn.MSELoss(reduction="none")
+        self._lambda = _lambda
+
+    def forward(
+        self,
+        model_output: torch.Tensor,
+        target: torch.Tensor,
+        anat_mask: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Can take any outputs"""
+        # Mask = 1 represents not masked points
+        reconstruction_loss = (model_output - target) ** 2  # (B, X, Y, Z, C)
+
+        # Weighting: 1 inside vessels, 1 / (dist_map + eps) outside vessels
+        weights = torch.where(
+            anat_mask > 0.5,
+            torch.ones_like(reconstruction_loss),  # original MSE inside vessels
+            torch.ones_like(reconstruction_loss)
+            * self._lambda,  # decreased MSE outside vessels
+        )
+
+        # Mask weights with mask from MAE
+        effective_weights = weights * (1 - mask)
+
+        reconstruction_loss = torch.sum(reconstruction_loss * effective_weights) / (
+            torch.sum((effective_weights)) + 1e-5
+        )
+
+        return reconstruction_loss
+
+
 class LossMaskMSELoss(AbstractLoss):
     def forward(
         self, model_output: torch.Tensor, target: torch.Tensor, loss_mask: torch.Tensor
