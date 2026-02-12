@@ -110,6 +110,187 @@ class AnatDistWeightedMAEMSELoss(AbstractLoss):
         reconstruction_loss = torch.sum(reconstruction_loss * effective_weights) / (
             torch.sum((effective_weights)) + 1e-5
         )
+        return reconstruction_loss
+
+
+class AnatDistWeightedMAEMSELoss_recDistMap(AbstractLoss):
+    # Loss function combining penalized vasculature reconstruction
+    # with reconstruction of vasculature distance map
+    def __init__(self, _lambda=0.001):
+        super().__init__()
+        self.loss = nn.MSELoss(reduction="none")
+        self._lambda = _lambda
+
+    def forward(
+        self,
+        model_output: torch.Tensor,
+        target: torch.Tensor,
+        anat_mask: torch.Tensor,
+        dist_map: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Can take any outputs"""
+        # Mask = 1 represents not masked points
+        rec_output = model_output[0].unsqueeze(0)
+        distmap_output = model_output[-1].unsqueeze(0)
+        reconstruction_loss = (rec_output - target) ** 2  # (B, X, Y, Z, C)
+        distmap_loss = (distmap_output - dist_map) ** 2
+
+        distmap_loss = torch.sum(distmap_loss * (1 - mask)) / torch.sum((1 - mask))
+
+        """
+        plt.figure()
+        plt.subplot(151)
+        plt.imshow(
+            target[0, 0, model_output.shape[2] // 2].detach().cpu().numpy(),
+            cmap="gray",
+        )
+        plt.colorbar()
+        plt.subplot(152)
+        plt.imshow(
+            model_output[1, 0, model_output.shape[2] // 2].detach().cpu().numpy(),
+            cmap="gray",
+        )
+        plt.colorbar()
+        plt.subplot(153)
+        plt.imshow(
+            dist_map[0, 0, model_output.shape[2] // 2].detach().cpu().numpy(),
+            cmap="gray",
+        )
+        plt.colorbar()
+        plt.subplot(154)
+        plt.imshow(
+            anat_mask[0, 0, model_output.shape[2] // 2].detach().cpu().numpy(),
+            cmap="gray",
+        )
+        plt.colorbar()
+        plt.subplot(155)
+        plt.imshow(
+            mask[0, 0, dist_map.shape[2] // 2].detach().cpu().numpy(),
+            cmap="gray",
+        )
+        plt.colorbar()
+        plt.savefig("/home/a870a/test_rec.png")
+        plt.close()
+        sys.exit()
+
+        # Derive distance maps
+
+        dist_map = torch.stack(
+            [
+                torch.from_numpy(
+                    ndi.distance_transform_edt(
+                        (anat_mask[b, 0].detach().cpu().numpy() < 1)
+                    )
+                )
+                for b in range(target.shape[0])
+            ],
+            dim=0,
+        ).to(
+            model_output.device, dtype=model_output.dtype
+        )  # (B, D, H, W)
+        dist_map = dist_map.unsqueeze(1)
+        """
+
+        # Weighting: 1 inside vessels, 1 / (dist_map + eps) outside vessels
+        weights = torch.where(
+            anat_mask > 0.5,
+            torch.ones_like(reconstruction_loss),  # original MSE inside vessels
+            1.0 / (dist_map + 1.0),  # decreased MSE outside vessels
+        )
+
+        # Mask weights with mask from MAE
+        effective_weights = weights * (1 - mask)
+
+        reconstruction_loss = torch.sum(reconstruction_loss * effective_weights) / (
+            torch.sum((effective_weights)) + 1e-5
+        )
+
+        reconstruction_loss += distmap_loss
+
+        return reconstruction_loss
+
+
+class MAEMSELoss_recDistMap(AbstractLoss):
+    # Loss function combining penalized vasculature reconstruction
+    # with reconstruction of vasculature distance map
+    def __init__(self, _lambda=0.001):
+        super().__init__()
+        self.loss = nn.MSELoss(reduction="none")
+        self._lambda = _lambda
+
+    def forward(
+        self,
+        model_output: torch.Tensor,
+        target: torch.Tensor,
+        dist_map: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Can take any outputs"""
+        # Mask = 1 represents not masked points
+        rec_output = model_output[0].unsqueeze(0)
+        distmap_output = model_output[-1].unsqueeze(0)
+        reconstruction_loss = (rec_output - target) ** 2  # (B, X, Y, Z, C)
+        distmap_loss = (distmap_output - dist_map) ** 2
+
+        reconstruction_loss = torch.sum(reconstruction_loss * (1 - mask)) / torch.sum(
+            (1 - mask)
+        )
+        distmap_loss = torch.sum(distmap_loss * (1 - mask)) / torch.sum((1 - mask))
+        """
+        plt.figure()
+        plt.subplot(151)
+        plt.imshow(
+            target[0, 0, model_output.shape[2] // 2].detach().cpu().numpy(),
+            cmap="gray",
+        )
+        plt.colorbar()
+        plt.subplot(152)
+        plt.imshow(
+            model_output[0, 0, model_output.shape[2] // 2].detach().cpu().numpy(),
+            cmap="gray",
+        )
+        plt.colorbar()
+        plt.subplot(153)
+        plt.imshow(
+            dist_map[0, 0, model_output.shape[2] // 2].detach().cpu().numpy(),
+            cmap="gray",
+        )
+        plt.colorbar()
+        plt.subplot(154)
+        plt.imshow(
+            anat_mask[0, 0, model_output.shape[2] // 2].detach().cpu().numpy(),
+            cmap="gray",
+        )
+        plt.colorbar()
+        plt.subplot(155)
+        plt.imshow(
+            mask[0, 0, dist_map.shape[2] // 2].detach().cpu().numpy(),
+            cmap="gray",
+        )
+        plt.colorbar()
+        plt.savefig("/home/a870a/test_rec.png")
+        plt.close()
+        sys.exit()
+
+        # Derive distance maps
+        
+        dist_map = torch.stack(
+            [
+                torch.from_numpy(
+                    ndi.distance_transform_edt(
+                        (anat_mask[b, 0].detach().cpu().numpy() < 1)
+                    )
+                )
+                for b in range(target.shape[0])
+            ],
+            dim=0,
+        ).to(
+            model_output.device, dtype=model_output.dtype
+        )  # (B, D, H, W)
+        dist_map = dist_map.unsqueeze(1)
+        """
+        reconstruction_loss += self._lambda * distmap_loss
 
         return reconstruction_loss
 
