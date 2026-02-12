@@ -206,7 +206,7 @@ class AnatDistWeightedMAEMSELoss_recDistMap(AbstractLoss):
             torch.sum((effective_weights)) + 1e-5
         )
 
-        reconstruction_loss += distmap_loss
+        reconstruction_loss += self._lambda * distmap_loss
 
         return reconstruction_loss
 
