@@ -816,17 +816,17 @@ def corrupt_mask_cxyz(mask):
     out = mask.copy()
 
     # 1. small spatial shift
-    # if np.random.rand() < 0.3:
-    shift = np.random.randint(-4, 5, size=3)
-    out = safe_shift_multiclass(out, shift)
+    if np.random.rand() < 0.3:
+        shift = np.random.randint(-4, 5, size=3)
+        out = safe_shift_multiclass(out, shift)
 
     # 2. dropout (vessel missing annotations)
-    # if np.random.rand() < 0.2:
-    out = dropout_labels(out, p=0.005)
+    if np.random.rand() < 0.3:
+        out = dropout_labels(out, p=0.005)
 
     # 3. boundary noise (cheap erosion-like effect)
-    # if np.random.rand() < 0.2:
-    out = simple_erosion_like(out)
+    if np.random.rand() < 0.3:
+        out = simple_erosion_like(out)
 
     return (out > 0).astype(np.uint8)
 
