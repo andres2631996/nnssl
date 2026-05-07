@@ -49,6 +49,7 @@ from nnssl.ssl_data.dataloading.data_loader_3d import (
     nnsslDataLoader3D,
     nnsslAnatDataLoader3D,
     nnsslDistDataLoader3D,
+    nnsslDistCorruptedDataLoader3D,
     nnsslAnatDilatedDataLoader3D,
 )
 from nnssl.ssl_data.dataloading.utils import get_subject_identifiers
@@ -827,6 +828,34 @@ class AbstractBaseTrainer(ABC):
         dataset_tr, dataset_val = self.get_tr_and_val_datasets()
 
         dl_tr = nnsslDistDataLoader3D(
+            dataset_tr,
+            self.batch_size,
+            initial_patch_size,
+            self.config_plan.patch_size,
+            sampling_probabilities=None,
+            pad_sides=None,
+            oversample_foreground_percent=oversample_foreground_percent,
+        )
+        dl_val = nnsslDistDataLoader3D(
+            dataset_val,
+            self.batch_size,
+            self.config_plan.patch_size,
+            self.config_plan.patch_size,
+            sampling_probabilities=None,
+            pad_sides=None,
+            oversample_foreground_percent=oversample_foreground_percent,
+        )
+        return dl_tr, dl_val
+
+    def get_dist_corrupted_dataloaders(
+        self,
+        initial_patch_size: Tuple[int, ...],
+        oversample_foreground_percent: float = 1.0,
+    ):
+        dataset_tr, dataset_val = self.get_tr_and_val_datasets()
+
+        # Corrupted dataloader only for training
+        dl_tr = nnsslDistCorruptedDataLoader3D(
             dataset_tr,
             self.batch_size,
             initial_patch_size,
