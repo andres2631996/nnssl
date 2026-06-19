@@ -211,6 +211,61 @@ class AnatDistWeightedMAEMSELoss_recDistMap(AbstractLoss):
         return reconstruction_loss
 
 
+class AMAPWeightedMAEMSELoss(AbstractLoss):
+    """
+    AMAP-style anatomically-weighted MAE loss (binary-mask instantiation), for the
+    mechanism comparison against Vasc-MAE.
+
+        w = lambda_v * 1[vessel] + lambda_b * 1[boundary band] + lambda_0
+
+    The boundary band is the outside shell within radius r of the vessel surface,
+    derived directly from dist_map (0 inside vessels, distance-to-vessel outside).
+    Same base loss (MSE), masking, backbone, data, and binary masks as Vasc-MAE;
+    only the weight function differs, isolating the mechanism.
+
+    Drop-in: identical forward signature to AnatDistWeightedMAEMSELoss.
+    mask == 1 marks visible (not-masked) points.
+    """
+
+    def __init__(
+        self,
+        lambda_v: float = 0.7,
+        lambda_b: float = 0.2,
+        lambda_0: float = 0.1,
+        r: float = 2.0,
+    ):
+        super().__init__()
+        self.lambda_v = lambda_v
+        self.lambda_b = lambda_b
+        self.lambda_0 = lambda_0
+        self.r = r
+
+    def forward(
+        self,
+        model_output: torch.Tensor,  # (B, C, X, Y, Z)
+        target: torch.Tensor,  # (B, C, X, Y, Z)
+        anat_mask: torch.Tensor,  # (B, 1, X, Y, Z) binary vessel mask
+        dist_map: torch.Tensor,  # (B, 1, X, Y, Z) 0 inside vessels, dist-to-vessel outside
+        mask: torch.Tensor,  # (B, 1, X, Y, Z) 1 = visible (not masked)
+    ) -> torch.Tensor:
+        reconstruction_loss = (model_output - target) ** 2
+
+        vessel = (anat_mask > 0.5).to(model_output.dtype)  # 1 inside vessel
+        boundary_band = ((dist_map > 0) & (dist_map <= self.r)).to(
+            model_output.dtype
+        )  # outside shell
+
+        amap_weight = (
+            self.lambda_v * vessel + self.lambda_b * boundary_band + self.lambda_0
+        )  # all terms >= 0
+
+        effective_weights = amap_weight * (1 - mask)  # masked tokens only
+
+        return torch.sum(reconstruction_loss * effective_weights) / (
+            torch.sum(effective_weights) + 1e-5
+        )
+
+
 class MAEMSELoss_recDistMap(AbstractLoss):
     # Loss function combining penalized vasculature reconstruction
     # with reconstruction of vasculature distance map
