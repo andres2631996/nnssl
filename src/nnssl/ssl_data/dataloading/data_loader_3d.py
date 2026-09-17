@@ -102,6 +102,7 @@ class nnsslAnatDataLoader3D(nnsslDataLoaderBase):
         selected_keys = self.get_indices()
         data_all = []
         anon_all = []
+        anat_all = []
         case_properties = []
 
         for i in selected_keys:
@@ -139,6 +140,9 @@ class nnsslAnatDataLoader3D(nnsslDataLoaderBase):
             )
             data = data[this_slice]
             anon = anon[this_slice]
+            anat = anat[this_slice]
+            # anat = ndi.binary_dilation((anat > 0.5), iterations=10)
+            anat = (anat > 0.5).astype(np.uint8)
 
             padding = [
                 (-min(0, bbox_lbs[i]), max(bbox_ubs[i] - shape[i], 0))
@@ -150,13 +154,17 @@ class nnsslAnatDataLoader3D(nnsslDataLoaderBase):
             anon_all.append(
                 np.pad(anon, ((0, 0), *padding), "constant", constant_values=0)
             )
+            anat_all.append(
+                np.pad(anat, ((0, 0), *padding), "constant", constant_values=0)
+            )
 
         data_all = np.stack(data_all, axis=0)
         anon_all = np.stack(anon_all, axis=0)
+        anat_all = np.stack(anat_all, axis=0)
 
         return {
             "data": data_all,
-            "seg": anon_all,
+            "seg": anat_all,
             "properties": case_properties,
             "keys": selected_keys,
         }

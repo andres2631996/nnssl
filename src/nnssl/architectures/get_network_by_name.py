@@ -18,7 +18,9 @@ from nnssl.architectures.architecture_registry import (
     SUPPORTED_ARCHITECTURES,
     get_res_enc_l,
     get_noskip_res_enc_l,
+    get_dual_decoder_res_enc_l,
 )
+from nnssl.architectures.dual_decoder_resenc import DualDecoderResidualEncoderUNet
 from nnssl.experiment_planning.experiment_planners.plan import ConfigurationPlan
 
 
@@ -93,3 +95,23 @@ def get_network_by_name(
                 "Cannot return encoder only for Primus architectures."
             )
     return model
+
+
+def get_dual_decoder_network(
+    configuration_plan: ConfigurationPlan,
+    architecture_name: SUPPORTED_ARCHITECTURES,
+    num_input_channels: int,
+    recon_out_channels: int,
+    seg_out_channels: int,
+) -> DualDecoderResidualEncoderUNet:
+    """
+    Builds a network with a single shared encoder and two independent decoder
+    heads: one for image reconstruction, one for an auxiliary segmentation task.
+    """
+    if architecture_name == "ResEncL":
+        return get_dual_decoder_res_enc_l(
+            num_input_channels, recon_out_channels, seg_out_channels
+        )
+    raise ValueError(
+        f"Architecture {architecture_name} does not support dual-decoder pretraining."
+    )

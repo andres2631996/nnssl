@@ -15,7 +15,10 @@ from nnssl.adaptation_planning.adaptation_plan import (
     ArchitecturePlans,
     DynamicArchitecturePlans,
 )
-from nnssl.architectures.get_network_by_name import get_network_by_name
+from nnssl.architectures.get_network_by_name import (
+    get_network_by_name,
+    get_dual_decoder_network,
+)
 from nnssl.architectures.get_network_from_plan import get_network_from_plans
 from nnssl.data.nnsslFilter.iqs_filter import OpenMindIQSFilter
 from nnssl.data.nnsslFilter.modality_filter import ModalityFilter
@@ -48,6 +51,7 @@ from nnssl.training.loss.mse_loss import (
     MAEMSELoss_recDistMap,
     AMAPWeightedMAEMSELoss
 )
+from nnssl.training.loss.dual_decoder_mae_loss import DualDecoderMAELoss
 from nnssl.training.nnsslTrainer.AbstractTrainer import AbstractBaseTrainer
 from torch import nn
 from batchgenerators.transforms.spatial_transforms import (
@@ -6709,3 +6713,393 @@ class BaseMAETrainer_weightedANAT_1500ep_BS8(BaseMAETrainer_weightedANAT):
         super().__init__(plan, configuration_name, fold, pretrain_json, device)
         self.num_epochs = 1500
         self.total_batch_size = 8
+
+
+############################# DUAL DECODER (IMAGE + SEGMENTATION) #############################
+
+
+class VesselSegDecoderMAETrainer(BaseMAETrainer):
+    """
+    MAE with a second decoder trained to predict the (auxiliary) vessel segmentation,
+    following the dual-decoder pretraining of Wang et al. (reduced to its
+    backbone-agnostic pretraining mechanism). The segmentation target is the
+    PREDICTED vessel mask from our auxiliary prior, not ground truth.
+    """
+
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device = torch.device("cuda"),
+        seg_loss_weight: float = 1.0,
+        num_seg_classes: int = 2,
+    ):
+        super().__init__(plan, configuration_name, fold, pretrain_json, device)
+        self.seg_loss_weight = seg_loss_weight
+        self.num_seg_classes = num_seg_classes
+        self.total_batch_size = 2
+
+    def build_loss(self):
+        # Combined reconstruction (MSE on masked voxels) + segmentation (Dice+CE) loss.
+        return DualDecoderMAELoss(seg_loss_weight=self.seg_loss_weight, is_ddp=self.is_ddp)
+
+    def get_dataloaders(self):
+        patch_size = self.config_plan.patch_size
+        (
+            rotation_for_DA,
+            do_dummy_2d_data_aug,
+            initial_patch_size,
+            mirror_axes,
+        ) = configure_rotation_dummyDA_mirroring_and_inital_patch_size(patch_size)
+        if do_dummy_2d_data_aug:
+            self.print_to_log_file("Using dummy 2D data augmentation")
+
+        # ------------------------ Training data augmentations ----------------------- #
+        tr_transforms = self.get_training_transforms(
+            patch_size,
+            rotation_for_DA,
+            mirror_axes,
+            do_dummy_2d_data_aug,
+            order_resampling_data=3,
+            order_resampling_seg=1,
+            use_mask_for_norm=self.config_plan.use_mask_for_norm,
+        )
+
+        # ----------------------- Validation data augmentations ---------------------- #
+        val_transforms = self.get_validation_transforms()
+
+        dl_tr, dl_val = self.get_foreground_dataloaders(initial_patch_size)
+
+        allowed_num_processes = get_allowed_n_proc_DA()
+        if allowed_num_processes == 0:
+            mt_gen_train = SingleThreadedAugmenter(dl_tr, tr_transforms)
+            mt_gen_val = SingleThreadedAugmenter(dl_val, val_transforms)
+        else:
+            mt_gen_train = LimitedLenWrapper(
+                self.num_iterations_per_epoch,
+                data_loader=dl_tr,
+                transform=tr_transforms,
+                num_processes=allowed_num_processes,
+                num_cached=6,
+                seeds=None,
+                pin_memory=self.device.type == "cuda",
+                wait_time=0.02,
+            )
+            mt_gen_val = LimitedLenWrapper(
+                self.num_val_iterations_per_epoch,
+                data_loader=dl_val,
+                transform=val_transforms,
+                num_processes=max(1, allowed_num_processes // 2),
+                num_cached=3,
+                seeds=None,
+                pin_memory=self.device.type == "cuda",
+                wait_time=0.02,
+            )
+        return mt_gen_train, mt_gen_val
+
+    @override
+    def build_architecture_and_adaptation_plan(
+        self,
+        config_plan: ConfigurationPlan,
+        num_input_channels: int,
+        num_output_channels: int,
+    ) -> nn.Module:
+        # Two-headed network: shared ResEncL encoder + one decoder for reconstruction
+        # (num_output_channels) and one for segmentation (num_seg_classes).
+        architecture = get_dual_decoder_network(
+            config_plan,
+            "ResEncL",
+            num_input_channels,
+            recon_out_channels=num_output_channels,
+            seg_out_channels=self.num_seg_classes,
+        )
+        arch_plans = ArchitecturePlans(arch_class_name="ResEncL")
+        adapt_plan = AdaptationPlan(
+            architecture_plans=arch_plans,
+            pretrain_plan=self.plan,
+            pretrain_num_input_channels=num_input_channels,
+            recommended_downstream_patchsize=self.recommended_downstream_patchsize,
+            key_to_encoder="encoder.stages",
+            key_to_stem="encoder.stem",
+            keys_to_in_proj=(
+                "encoder.stem.convs.0.conv",
+                "encoder.stem.convs.0.all_modules.0",
+            ),
+        )
+        save_json(adapt_plan.serialize(), self.adaptation_json_plan)
+        return architecture, adapt_plan
+
+    @staticmethod
+    def mask_creation(
+        segm: torch.Tensor,
+        batch_size: int,
+        patch_size: tuple[int, int, int],
+        mask_percentage: float,
+        rng_seed: int | None = None,
+        block_size: int = 16,
+    ) -> torch.Tensor:
+        """
+        Creates a masking tensor with 1s (indicating no masking) and 0s (indicating masking).
+        The mask has to be of same size like the input data (batch_size, 1, x, y, z).
+
+        :param segm: segmentation to bias the MAE masking process
+        :param batch_size: batch size during training
+        :param patch_size: The 3D shape information for the input patch.
+        :param mask_percentage: percentage of the patch that should be masked
+        :param block_size: size of the blocks that should be masked
+        :return:
+        """
+        sparsity_factor = mask_percentage
+        mask = [
+            create_blocky_mask_segm(seg=segm[i], tensor_size=patch_size, block_size=block_size, sparsity_factor=sparsity_factor)
+            for i in range(batch_size)
+        ]
+        mask = torch.stack(mask)[:, None, ...]  # Add channel dimension
+        return mask
+
+    def train_step(self, batch: dict) -> dict:
+        data = batch["data"].to(self.device, non_blocking=True)
+        seg = batch["seg"].to(self.device, non_blocking=True)  # predicted vessel mask
+
+        mask = self.mask_creation(
+            seg, int(self.total_batch_size), self.config_plan.patch_size, self.mask_percentage
+        ).to(self.device, non_blocking=True)
+        rep_D, rep_H, rep_W = (
+            data.shape[2] // mask.shape[2],
+            data.shape[3] // mask.shape[3],
+            data.shape[4] // mask.shape[4],
+        )
+        mask = (
+            mask.repeat_interleave(rep_D, dim=2)
+            .repeat_interleave(rep_H, dim=3)
+            .repeat_interleave(rep_W, dim=4)
+        )
+        masked_data = data * mask
+
+        self.optimizer.zero_grad(set_to_none=True)
+        with (
+            autocast(self.device.type, enabled=True)
+            if self.device.type == "cuda"
+            else dummy_context()
+        ):
+            recon_out, seg_out = self.network(masked_data)  # two outputs now
+            l = self.loss(recon_out, seg_out, data, seg, mask)
+
+        if self.grad_scaler is not None:
+            self.grad_scaler.scale(l).backward()
+            self.grad_scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
+            self.grad_scaler.step(self.optimizer)
+            self.grad_scaler.update()
+        else:
+            l.backward()
+            torch.nn.utils.clip_grad_norm_(self.network.parameters(), 12)
+            self.optimizer.step()
+        return {"loss": l.detach().cpu().numpy()}
+
+    def validation_step(self, batch: dict) -> dict:
+        data = batch["data"].to(self.device, non_blocking=True)
+        seg = batch["seg"].to(self.device, non_blocking=True)
+        mask = self.mask_creation(
+            seg, int(self.total_batch_size), self.config_plan.patch_size, self.mask_percentage
+        ).to(self.device, non_blocking=True)
+        rep_D, rep_H, rep_W = (
+            data.shape[2] // mask.shape[2],
+            data.shape[3] // mask.shape[3],
+            data.shape[4] // mask.shape[4],
+        )
+        mask = (
+            mask.repeat_interleave(rep_D, dim=2)
+            .repeat_interleave(rep_H, dim=3)
+            .repeat_interleave(rep_W, dim=4)
+        )
+        masked_data = data * mask
+        with (
+            autocast(self.device.type, enabled=True)
+            if self.device.type == "cuda"
+            else dummy_context()
+        ):
+            recon_out, seg_out = self.network(masked_data)
+            l = self.loss(recon_out, seg_out, data, seg, mask)
+        return {"loss": l.detach().cpu().numpy()}
+
+
+
+class VesselSegDecoderMAETrainer_warmup50ep(VesselSegDecoderMAETrainer):
+
+    def __init__(
+        self,
+        plan: Plan,
+        configuration_name: str,
+        fold: int,
+        pretrain_json: dict,
+        device: torch.device,
+    ):
+
+        super(VesselSegDecoderMAETrainer_warmup50ep, self).__init__(
+            plan,
+            configuration_name,
+            fold,
+            pretrain_json,
+            device,
+        )
+        # Fix the input patch size
+        self.config_plan.patch_size = (160, 160, 160)
+
+        ###settings taken from fabi
+        self.drop_path_rate = 0.2
+        self.attention_drop_rate = 0
+        self.grad_clip = 1
+        self.initial_lr = 3e-4
+        self.weight_decay = 5e-2
+        self.enable_deep_supervision = False
+        self.warmup_duration_whole_net = 50  # lin increase whole network
+        self.training_stage = None
+
+    def configure_optimizers(self, stage: str = "warmup_all"):
+        """
+        Two-stage training:
+        1) warmup_all  → linear LR warmup for `warmup_duration_whole_net` epochs
+        2) train       → poly LR decay starting AFTER warmup
+        """
+        assert stage in ["warmup_all", "train"]
+
+        # If already in this stage, return existing schedulers
+        if self.training_stage == stage:
+            return self.optimizer, self.lr_scheduler
+
+        # Select parameters (DDP-safe)
+        if isinstance(self.network, DDP):
+            params = self.network.module.parameters()
+        else:
+            params = self.network.parameters()
+
+        # -------------------------------
+        # 1) WARMUP STAGE
+        # -------------------------------
+        if stage == "warmup_all":
+            self.print_to_log_file("train whole net → WARMUP stage")
+
+            # fresh optimizer
+            optimizer = torch.optim.AdamW(
+                params,
+                lr=self.initial_lr,
+                weight_decay=self.weight_decay,
+                betas=(0.9, 0.98),
+                amsgrad=False,
+                fused=True,
+            )
+
+            # linear warmup → reaches initial_lr at warmup_duration_whole_net
+            lr_scheduler = Lin_incr_LRScheduler(
+                optimizer,
+                max_lr=self.initial_lr,
+                max_steps=self.warmup_duration_whole_net,
+            )
+
+            self.print_to_log_file(
+                f"[Warmup] Initialized at epoch {self.current_epoch}"
+            )
+
+        # -------------------------------
+        # 2) TRAIN STAGE (after warmup)
+        # -------------------------------
+        else:
+            self.print_to_log_file("train whole net → TRAIN stage")
+
+            # If transitioning warmup → train:
+            if self.training_stage == "warmup_all":
+                # keep optimizer from warmup (preserve momentum)
+                optimizer = self.optimizer
+                self.print_to_log_file(
+                    "Reusing optimizer from warmup (momentum preserved)."
+                )
+            else:
+                # If train is called directly (no warmup)
+                optimizer = torch.optim.AdamW(
+                    params,
+                    lr=self.initial_lr,
+                    weight_decay=self.weight_decay,
+                    betas=(0.9, 0.98),
+                    amsgrad=False,
+                    fused=True,
+                )
+
+            # Poly LR decay starting AFTER warmup duration
+            lr_scheduler = PolyLRScheduler_offset(
+                optimizer=optimizer,
+                initial_lr=self.initial_lr,
+                max_steps=self.num_epochs,
+                start_step=self.warmup_duration_whole_net,
+            )
+
+            self.print_to_log_file(f"[Train] Initialized at epoch {self.current_epoch}")
+
+        # Update state
+        self.training_stage = stage
+        empty_cache(self.device)
+
+        # Store inside object so next call knows what's already set
+        self.optimizer = optimizer
+        self.lr_scheduler = lr_scheduler
+
+        return optimizer, lr_scheduler
+
+    def on_train_epoch_start(self):
+        if self.current_epoch == 0:
+            self.optimizer, self.lr_scheduler = self.configure_optimizers("warmup_all")
+        elif self.current_epoch == self.warmup_duration_whole_net:
+            self.optimizer, self.lr_scheduler = self.configure_optimizers("train")
+
+        super().on_train_epoch_start()
+
+    def load_checkpoint(self, filename_or_checkpoint: Union[dict, str]) -> None:
+        if not self.was_initialized:
+            self.initialize()
+
+        if isinstance(filename_or_checkpoint, str):
+            checkpoint = torch.load(filename_or_checkpoint, map_location=self.device)
+        # if state dict comes from nn.DataParallel but we use non-parallel model here then the state dict keys do not
+        # match. Use heuristic to make it match
+        new_state_dict = {}
+        for k, value in checkpoint["network_weights"].items():
+            key = k
+            if key not in self.network.state_dict().keys() and key.startswith(
+                "module."
+            ):
+                key = key[7:]
+            new_state_dict[key] = value
+
+        self.my_init_kwargs = checkpoint["init_args"]
+
+        self.current_epoch = checkpoint["current_epoch"]
+        min_epoch = self.logger.load_checkpoint(checkpoint["logging"])
+        # Apparently the val log is not written correctly when we currently save the checkpoint.
+        self.current_epoch = min_epoch
+        self._best_ema = checkpoint["_best_ema"]
+
+        # messing with state dict naming schemes. Facepalm.
+        if self.is_ddp:
+            if isinstance(self.network.module, OptimizedModule):
+                self.network.module._orig_mod.load_state_dict(new_state_dict)
+            else:
+                self.network.module.load_state_dict(new_state_dict)
+        else:
+            if isinstance(self.network, OptimizedModule):
+                self.network._orig_mod.load_state_dict(new_state_dict)
+            else:
+                self.network.load_state_dict(new_state_dict)
+
+        # it's fine to do this every time we load because configure_optimizers will be a no-op if the correct optimizer
+        # and lr scheduler are already set up
+        if self.current_epoch < self.warmup_duration_whole_net:
+            self.optimizer, self.lr_scheduler = self.configure_optimizers("warmup_all")
+        else:
+            self.optimizer, self.lr_scheduler = self.configure_optimizers("train")
+
+        self.optimizer.load_state_dict(checkpoint["optimizer_state"])
+        if self.grad_scaler is not None:
+            if checkpoint["grad_scaler_state"] is not None:
+                self.grad_scaler.load_state_dict(checkpoint["grad_scaler_state"])
