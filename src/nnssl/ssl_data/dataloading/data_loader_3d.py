@@ -480,6 +480,89 @@ class nnsslDistCorruptedDataLoader3D(nnsslAnatDataLoader3D):
             old_anat = anat.copy()
             anat = corrupt_mask_cxyz(mask=anat)
 
+            dist = ndi.distance_transform_edt((anat < 1))
+
+            padding = [
+                (-min(0, bbox_lbs[i]), max(bbox_ubs[i] - shape[i], 0))
+                for i in range(dim)
+            ]
+            data_all.append(
+                np.pad(data, ((0, 0), *padding), "constant", constant_values=0)
+            )
+            anon_all.append(
+                np.pad(anon, ((0, 0), *padding), "constant", constant_values=0)
+            )
+            anat_all.append(
+                np.pad(anat, ((0, 0), *padding), "constant", constant_values=0)
+            )
+            dist_all.append(np.pad(dist, ((0, 0), *padding), "maximum"))
+
+        data_all = np.stack(data_all, axis=0)
+        anon_all = np.stack(anon_all, axis=0)
+        anat_all = np.stack(anat_all, axis=0)
+        dist_all = np.stack(dist_all, axis=0)
+
+        data_all = np.concatenate([data_all, dist_all], axis=1)
+
+        return {
+            "data": data_all,
+            "seg": anat_all,
+            "properties": case_properties,
+            "keys": selected_keys,
+        }
+
+
+class nnsslDistCorruptedElasticDataLoader3D(nnsslAnatDataLoader3D):
+
+    def generate_train_batch(self):
+        selected_keys = self.get_indices()
+        data_all = []
+        anon_all = []
+        anat_all = []
+        dist_all = []
+        case_properties = []
+
+        for i in selected_keys:
+            # oversampling foreground will improve stability of model training, especially if many patches are empty
+            # (Lung for example)
+
+            data, anon, anat, properties = self._data[i]
+            if anon is None:
+                anon = np.zeros(data.shape, dtype=np.uint8)
+            if anat is None:
+                anat = np.zeros(data.shape, dtype=np.uint8)
+            case_properties.append(properties)
+
+            # If we are doing the cascade then the segmentation from the previous stage will already have been loaded by
+            # self._data.load_case(i) (see nnUNetDataset.load_case)
+            shape = data.shape[1:]
+            dim = len(shape)
+            force_fg = self._probabilistic_oversampling()
+            bbox_lbs, bbox_ubs = self.get_bbox(shape, anat if force_fg else None)
+
+            # whoever wrote this knew what he was doing (hint: it was me). We first crop the data to the region of the
+            # bbox that actually lies within the data. This will result in a smaller array which is then faster to pad.
+            # valid_bbox is just the coord that lied within the data cube. It will be padded to match the patch size
+            # later
+            valid_bbox_lbs = [max(0, bbox_lbs[i]) for i in range(dim)]
+            valid_bbox_ubs = [min(shape[i], bbox_ubs[i]) for i in range(dim)]
+
+            # At this point you might ask yourself why we would treat seg differently from seg_from_previous_stage.
+            # Why not just concatenate them here and forget about the if statements? Well that's because segneeds to
+            # be padded with -1 constant whereas seg_from_previous_stage needs to be padded with 0s (we could also
+            # remove label -1 in the data augmentation but this way it is less error prone)
+            this_slice = tuple(
+                [slice(0, data.shape[0])]
+                + [slice(i, j) for i, j in zip(valid_bbox_lbs, valid_bbox_ubs)]
+            )
+            data = data[this_slice]
+            anon = anon[this_slice]
+            anat = anat[this_slice]
+
+            # Corrupt anatomical mask with shifts and noise
+            old_anat = anat.copy()
+            anat = corrupt_mask_cxyz_elastic(mask=anat)
+
             """
             plt.figure()
             plt.subplot(321)
@@ -779,6 +862,44 @@ class nnsslIndexableCenterCropDataLoader3D(nnsslDataLoaderBase):
         return self.generate_train_batch(index)
 
 
+def safe_shift_elastic_multiclass(
+    mask, max_disp=4.0, smoothing=8.0, spacing=(0.5, 0.5, 0.5), seed=None
+):
+    """
+    Locally-varying deformation of a multi-class mask.
+    Each voxel is displaced by a smooth random field (not a global shift),
+    so vessel topology is locally distorted. max_disp in mm; spacing gives mm/voxel.
+    Uses nearest-neighbour interpolation to preserve discrete labels.
+    """
+    rng = np.random.default_rng(seed)
+    C, X, Y, Z = mask.shape
+
+    # max displacement in voxels per axis
+    max_vox = np.array(max_disp) / np.array(spacing)  # (3,)
+
+    # smooth random displacement field per spatial axis
+    disp = []
+    for a in range(3):
+        d = rng.standard_normal((X, Y, Z))
+        d = ndi.gaussian_filter(d, sigma=smoothing)
+        # normalize to unit std, then scale to desired max displacement
+        d = d / (d.std() + 1e-8)
+        d = d * max_vox[a]
+        disp.append(d)
+
+    # base coordinate grid + displacement
+    xx, yy, zz = np.meshgrid(np.arange(X), np.arange(Y), np.arange(Z), indexing="ij")
+    coords = np.stack(
+        [xx + disp[0], yy + disp[1], zz + disp[2]], axis=0
+    )  # (3, X, Y, Z)
+
+    out = np.zeros_like(mask)
+    for c in range(C):
+        # order=0 = nearest neighbour, preserves discrete labels
+        out[c] = ndi.map_coordinates(mask[c], coords, order=0, mode="constant", cval=0)
+    return out.astype(mask.dtype)
+
+
 def safe_shift_multiclass(mask, shift):
     C, X, Y, Z = mask.shape
     out = np.zeros_like(mask)
@@ -826,6 +947,25 @@ def corrupt_mask_cxyz(mask):
 
     # 3. boundary noise (cheap erosion-like effect)
     if np.random.rand() < 0.3:
+        out = simple_erosion_like(out)
+
+    return (out > 0).astype(np.uint8)
+
+
+def corrupt_mask_cxyz_elastic(mask):
+    out = mask.copy()
+
+    # 1. small spatial shift
+    if np.random.rand() < 0.5:
+        shift = np.random.randint(-4, 5, size=3)
+        out = safe_shift_elastic_multiclass(out)
+
+    # 2. dropout (vessel missing annotations)
+    if np.random.rand() < 0.5:
+        out = dropout_labels(out, p=0.005)
+
+    # 3. boundary noise (cheap erosion-like effect)
+    if np.random.rand() < 0.5:
         out = simple_erosion_like(out)
 
     return (out > 0).astype(np.uint8)
