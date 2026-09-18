@@ -150,9 +150,11 @@ def preprocess_and_save(
     output_image_filename.parent.mkdir(parents=True, exist_ok=True)
 
     if (
-        not (os.path.exists(str(output_image_filename) + ".b2nd"))
+        not nnSSLDatasetBlosc2._b2nd_or_npy_exists(str(output_image_filename) + ".b2nd")
         or not (os.path.exists(str(output_image_filename) + ".pkl"))
-        or not (os.path.exists(str(output_image_filename) + "__anat.b2nd"))
+        or not nnSSLDatasetBlosc2._b2nd_or_npy_exists(
+            str(output_image_filename) + "__anat.b2nd"
+        )
     ):
         # if (
         #    not (os.path.exists(str(output_image_filename) + ".npy"))

@@ -106,6 +106,24 @@ class nnSSLDatasetBlosc2(nnSSLBaseDataset):
             return self.__getitem__(choice(self.image_identifiers))
 
     @staticmethod
+    def _load_array_b2nd_or_npy(
+        b2nd_file: str, dparams: dict
+    ) -> Union[blosc2.NDArray, np.ndarray, None]:
+        """
+        Loads an array saved by `_save_array_b2nd_with_npy_fallback`: prefers the
+        `.b2nd` file, but falls back to the `.npy` sibling written whenever the
+        `.b2nd` write itself failed (see `save_case`). Returns None if neither exists.
+        """
+        npy_file = str(b2nd_file).replace(".b2nd", ".npy")
+        if os.path.exists(b2nd_file):
+            return blosc2.open(
+                urlpath=b2nd_file, mode="r", dparams=dparams, mmap_mode="r"
+            )
+        elif os.path.exists(npy_file):
+            return np.load(npy_file)
+        return None
+
+    @staticmethod
     def load_case(
         dataset_dir: str,
         image_dataset: dict[str, IndependentImage],
@@ -118,36 +136,23 @@ class nnSSLDatasetBlosc2(nnSSLBaseDataset):
         output_img_pkl_path = img.get_output_path("image", ext=".pkl")
         output_anat_mask_path = img.get_output_path("anat_mask", ext=".b2nd")
         output_anon_mask_path = img.get_output_path("anon_mask", ext=".b2nd")
-        data_b2nd_file = join(dataset_dir, output_img_path)
-        data_npy_file = str(data_b2nd_file).replace(".b2nd", ".npy")
 
-        if os.path.exists(str(data_b2nd_file)):
-            data = blosc2.open(
-                urlpath=data_b2nd_file, mode="r", dparams=dparams, mmap_mode="r"
-            )
-        elif not (os.path.exists(str(data_b2nd_file))) and os.path.exists(
-            str(data_npy_file)
-        ):
-            data = np.load(data_npy_file)
+        data_b2nd_file = join(dataset_dir, output_img_path)
+        data = nnSSLDatasetBlosc2._load_array_b2nd_or_npy(str(data_b2nd_file), dparams)
 
         anon_b2nd_file = join(dataset_dir, output_anon_mask_path)
-        if isfile(anon_b2nd_file):
-            anon = blosc2.open(
-                urlpath=anon_b2nd_file, mode="r", dparams=dparams, mmap_mode="r"
-            )
-        else:
-            anon = None
+        anon = nnSSLDatasetBlosc2._load_array_b2nd_or_npy(str(anon_b2nd_file), dparams)
 
         anat_b2nd_file = join(dataset_dir, output_anat_mask_path)
-        if isfile(anat_b2nd_file):
-            anat = blosc2.open(
-                urlpath=anat_b2nd_file, mode="r", dparams=dparams, mmap_mode="r"
-            )
-        else:
-            anat = None
+        anat = nnSSLDatasetBlosc2._load_array_b2nd_or_npy(str(anat_b2nd_file), dparams)
 
         properties = load_pickle(join(dataset_dir, output_img_pkl_path))
         return data, anon, anat, properties
+
+    @staticmethod
+    def _b2nd_or_npy_exists(b2nd_file: str) -> bool:
+        """A case counts as existing whether it landed as `.b2nd` or the `.npy` fallback."""
+        return isfile(b2nd_file) or isfile(str(b2nd_file).replace(".b2nd", ".npy"))
 
     @staticmethod
     def verify_file_exists(
@@ -162,17 +167,56 @@ class nnSSLDatasetBlosc2(nnSSLBaseDataset):
         output_anat_mask_path = img.get_output_path("anat_mask", ext=".b2nd")
         output_anon_mask_path = img.get_output_path("anon_mask", ext=".b2nd")
         data_b2nd_file = join(dataset_dir, output_img_path)
-        data_and_pkl_exists = isfile(data_b2nd_file) and isfile(
-            join(dataset_dir, output_img_pkl_path)
-        )
+        data_and_pkl_exists = nnSSLDatasetBlosc2._b2nd_or_npy_exists(
+            data_b2nd_file
+        ) and isfile(join(dataset_dir, output_img_pkl_path))
 
         anon_b2nd_file = join(dataset_dir, output_anon_mask_path)
-        anon_exists = isfile(anon_b2nd_file)
+        anon_exists = nnSSLDatasetBlosc2._b2nd_or_npy_exists(anon_b2nd_file)
 
         anat_b2nd_file = join(dataset_dir, output_anat_mask_path)
-        anat_exists = isfile(anat_b2nd_file)
+        anat_exists = nnSSLDatasetBlosc2._b2nd_or_npy_exists(anat_b2nd_file)
 
         return data_and_pkl_exists, anon_exists, anat_exists
+
+    @staticmethod
+    def _save_array_b2nd_with_npy_fallback(
+        arr: np.ndarray,
+        filename_truncated: str,
+        chunks,
+        blocks,
+        cparams: dict,
+        array_name: str,
+    ):
+        """
+        Saves `arr` as `<filename_truncated>.b2nd`. blosc2 has not proven reliable for
+        very large arrays in practice (independent of the mid-write-kill/atomicity
+        problem) -- if the write itself raises, fall back to a plain `.npy`, which
+        `load_case`/`verify_file_exists` already know how to pick up as a sibling of
+        the (then absent) `.b2nd` file.
+        """
+        b2nd_path = filename_truncated + ".b2nd"
+        npy_path = filename_truncated + ".npy"
+        try:
+            blosc2.asarray(
+                np.ascontiguousarray(arr),
+                urlpath=b2nd_path,
+                chunks=chunks,
+                blocks=blocks,
+                cparams=cparams,
+                mmap_mode="w+",
+            )
+            # Clean up a stale .npy left behind by a previous failed attempt for this case.
+            if os.path.exists(npy_path):
+                os.remove(npy_path)
+        except Exception as e:
+            print(
+                f"[nnSSLDatasetBlosc2] Failed to save {array_name} as .b2nd "
+                f"({type(e).__name__}: {e}). Falling back to .npy: {npy_path}"
+            )
+            if os.path.exists(b2nd_path):
+                os.remove(b2nd_path)
+            np.save(npy_path, np.ascontiguousarray(arr))
 
     @staticmethod
     def save_case(
@@ -205,37 +249,30 @@ class nnSSLDatasetBlosc2(nnSSLBaseDataset):
         }
 
         if anon_mask is not None:
-            blosc2.asarray(
-                np.ascontiguousarray(anon_mask),
-                urlpath=anon_mask_filename_truncated + ".b2nd",
-                chunks=chunks_seg,
-                blocks=blocks_seg,
-                cparams=cparams,
-                mmap_mode="w+",
+            nnSSLDatasetBlosc2._save_array_b2nd_with_npy_fallback(
+                anon_mask,
+                anon_mask_filename_truncated,
+                chunks_seg,
+                blocks_seg,
+                cparams,
+                "anon_mask",
             )
 
         if anat_mask is not None:
-            blosc2.asarray(
-                np.ascontiguousarray(anat_mask),
-                urlpath=anat_mask_filename_truncated + ".b2nd",
-                chunks=chunks_seg,
-                blocks=blocks_seg,
-                cparams=cparams,
-                mmap_mode="w+",
+            nnSSLDatasetBlosc2._save_array_b2nd_with_npy_fallback(
+                anat_mask,
+                anat_mask_filename_truncated,
+                chunks_seg,
+                blocks_seg,
+                cparams,
+                "anat_mask",
             )
 
         write_pickle(properties, output_filename_truncated + ".pkl")
 
-        blosc2.asarray(
-            np.ascontiguousarray(data),
-            urlpath=output_filename_truncated + ".b2nd",
-            chunks=chunks,
-            blocks=blocks,
-            cparams=cparams,
-            mmap_mode="w+",
+        nnSSLDatasetBlosc2._save_array_b2nd_with_npy_fallback(
+            data, output_filename_truncated, chunks, blocks, cparams, "image"
         )
-
-        # np.save(output_filename_truncated + ".npy", np.ascontiguousarray(data))
 
     @staticmethod
     def get_identifiers(folder: str) -> List[str]:

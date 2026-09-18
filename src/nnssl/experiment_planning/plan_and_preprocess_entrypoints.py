@@ -1,6 +1,7 @@
 from time import sleep
 from nnssl.configuration import default_num_processes
 from nnssl.experiment_planning.plan_and_preprocess_api import extract_fingerprints, plan_experiments, preprocess
+from nnssl.experiment_planning.verify_preprocessed_integrity import verify_preprocessed_dataset
 from nnssl.preprocessing.preprocessors.default_preprocessor import PREPROCESS_SPACING_STYLES
 from typing import get_args
 from loguru import logger
@@ -147,6 +148,72 @@ def preprocess_entry():
         configurations=args.c,
         num_processes=np,
         verbose=args.verbose,
+    )
+
+
+def verify_preprocessed_entry():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Scan preprocessed .b2nd/.pkl files for truncation/corruption. Preprocessing writes "
+        "each array directly to its final path (no atomic temp-file + rename), so a worker that gets "
+        "OOM-killed or preempted mid-write -- more likely for large images, since the write simply takes "
+        "longer -- can leave a truncated .b2nd file behind that looks 'done' to a plain os.path.exists "
+        "check and only fails later, mid-training, when a dataloader worker tries to open it."
+    )
+    parser.add_argument(
+        "-d",
+        nargs="+",
+        type=int,
+        required=True,
+        help="[REQUIRED] List of dataset IDs to verify. Example: 2 4 5.",
+    )
+    parser.add_argument(
+        "-c",
+        nargs="+",
+        type=str,
+        default=None,
+        required=False,
+        help="[OPTIONAL] List of configurations to verify. Default: every configuration found in the "
+        "plans file.",
+    )
+    parser.add_argument(
+        "-plans_name",
+        default="nnsslPlans",
+        required=False,
+        help="[OPTIONAL] Plans identifier, same as used for -plans_name during preprocessing.",
+    )
+    parser.add_argument(
+        "-np",
+        type=int,
+        default=1,
+        required=False,
+        help="[OPTIONAL] Number of parallel processes used to open/verify files. Default: 1",
+    )
+    parser.add_argument(
+        "--full",
+        default=False,
+        action="store_true",
+        help="[OPTIONAL] Fully decompress every array instead of only opening it and reading its header/"
+        "shape. Much slower (has to read every chunk) but also catches corruption in the middle of a "
+        "file, not only a truncated header. Recommended at least once for datasets with very large images.",
+    )
+    parser.add_argument(
+        "--delete_corrupt",
+        default=False,
+        action="store_true",
+        help="[OPTIONAL] Delete any corrupt file found. This makes the preprocessor's existence-based "
+        "'already done' check see the corresponding case as incomplete again, so the next nnssl_preprocess "
+        "run will regenerate it.",
+    )
+    args = parser.parse_args()
+    verify_preprocessed_dataset(
+        args.d,
+        plans_identifier=args.plans_name,
+        configurations=args.c,
+        full_check=args.full,
+        num_processes=args.np,
+        delete_corrupt=args.delete_corrupt,
     )
 
 
