@@ -197,6 +197,7 @@ class nnSSLDatasetBlosc2(nnSSLBaseDataset):
         """
         b2nd_path = filename_truncated + ".b2nd"
         npy_path = filename_truncated + ".npy"
+        """
         try:
             blosc2.asarray(
                 np.ascontiguousarray(arr),
@@ -217,6 +218,9 @@ class nnSSLDatasetBlosc2(nnSSLBaseDataset):
             if os.path.exists(b2nd_path):
                 os.remove(b2nd_path)
             np.save(npy_path, np.ascontiguousarray(arr))
+        """
+
+        np.save(npy_path, np.ascontiguousarray(arr))
 
     @staticmethod
     def save_case(
