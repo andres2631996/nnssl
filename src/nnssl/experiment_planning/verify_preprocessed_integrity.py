@@ -45,17 +45,22 @@ def _check_single_b2nd(args: Tuple[str, bool]) -> Optional[CorruptionReport]:
         _ = arr.shape  # forces parsing of the file header/chunk index
         if full_check:
             _ = arr[...]  # forces decompression of every chunk, not just the header
+        del arr
     except Exception as e:
-        return CorruptionReport(path=filepath, kind="b2nd", error=f"{type(e).__name__}: {e}")
-    return None
+        print(filepath)
+        return CorruptionReport(
+            path=filepath, kind="b2nd", error=f"{type(e).__name__}: {e}"
+        )
 
 
 def _check_single_pkl(filepath: str) -> Optional[CorruptionReport]:
     try:
         load_pickle(filepath)
     except Exception as e:
-        return CorruptionReport(path=filepath, kind="pkl", error=f"{type(e).__name__}: {e}")
-    return None
+        print(filepath)
+        return CorruptionReport(
+            path=filepath, kind="pkl", error=f"{type(e).__name__}: {e}"
+        )
 
 
 def verify_preprocessed_folder(
@@ -78,27 +83,17 @@ def verify_preprocessed_folder(
     if num_processes > 1 and (b2nd_files or pkl_files):
         ctx = get_context("spawn")
         with ctx.Pool(num_processes) as p:
-            b2nd_results = p.map(_check_single_b2nd, [(f, full_check) for f in b2nd_files])
+            b2nd_results = p.map(
+                _check_single_b2nd, [(f, full_check) for f in b2nd_files]
+            )
             pkl_results = p.map(_check_single_pkl, pkl_files)
     else:
-        b2nd_results = [_check_single_b2nd((f, full_check)) for f in b2nd_files]
-        pkl_results = [_check_single_pkl(f) for f in pkl_files]
-
-    reports = [r for r in (*b2nd_results, *pkl_results) if r is not None]
-
-    for r in reports:
-        print(f"  [CORRUPT] {r.kind}: {r.path}\n            -> {r.error}")
-        if delete_corrupt:
-            try:
-                os.remove(r.path)
-                print(f"            removed.")
-            except OSError as e:
-                print(f"            failed to remove: {e}")
-
-    print(
-        f"  Done: {len(reports)}/{len(b2nd_files) + len(pkl_files)} files were corrupt/unreadable."
-    )
-    return reports
+        for f in b2nd_files:
+            _ = _check_single_b2nd((f, False))
+        for f in pkl_files:
+            _ = _check_single_pkl(f)
+        # b2nd_results = [_check_single_b2nd((f, full_check)) for f in b2nd_files]
+        # pkl_results = [_check_single_pkl(f) for f in pkl_files]
 
 
 def verify_preprocessed_dataset(
@@ -118,10 +113,16 @@ def verify_preprocessed_dataset(
         dataset_name = convert_id_to_dataset_name(dataset_id)
         plans_file = join(nnssl_preprocessed, dataset_name, plans_identifier + ".json")
         if not os.path.isfile(plans_file):
-            print(f"INFO: Plans file {plans_file} not found. Skipping dataset {dataset_name}.")
+            print(
+                f"INFO: Plans file {plans_file} not found. Skipping dataset {dataset_name}."
+            )
             continue
         plan = Plan.load_from_file(plans_file)
-        configs_to_check = configurations if configurations is not None else list(plan.configurations.keys())
+        configs_to_check = (
+            configurations
+            if configurations is not None
+            else list(plan.configurations.keys())
+        )
 
         for c in configs_to_check:
             if c not in plan.configurations:
@@ -131,7 +132,9 @@ def verify_preprocessed_dataset(
                 )
                 continue
             config_plan = plan.configurations[c]
-            root_dir = join(nnssl_preprocessed, dataset_name, config_plan.data_identifier)
+            root_dir = join(
+                nnssl_preprocessed, dataset_name, config_plan.data_identifier
+            )
             if not os.path.isdir(root_dir):
                 print(f"INFO: {root_dir} does not exist yet. Skipping.")
                 continue
@@ -144,7 +147,9 @@ def verify_preprocessed_dataset(
             )
             all_reports.extend(reports)
 
-    print(f"\nTotal corrupt/unreadable files across all requested datasets/configurations: {len(all_reports)}")
+    print(
+        f"\nTotal corrupt/unreadable files across all requested datasets/configurations: {len(all_reports)}"
+    )
     if delete_corrupt and all_reports:
         print(
             "Corrupt files were deleted. Re-run `nnssl_preprocess` for the affected dataset(s)/"
