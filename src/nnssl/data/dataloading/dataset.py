@@ -197,7 +197,7 @@ class nnSSLDatasetBlosc2(nnSSLBaseDataset):
         """
         b2nd_path = filename_truncated + ".b2nd"
         npy_path = filename_truncated + ".npy"
-        """
+
         try:
             blosc2.asarray(
                 np.ascontiguousarray(arr),
@@ -218,9 +218,24 @@ class nnSSLDatasetBlosc2(nnSSLBaseDataset):
             if os.path.exists(b2nd_path):
                 os.remove(b2nd_path)
             np.save(npy_path, np.ascontiguousarray(arr))
-        """
 
-        np.save(npy_path, np.ascontiguousarray(arr))
+        """
+        if filename_truncated.endswith("anat") or filename_truncated.endswith("anon"):
+            blosc2.asarray(
+                np.ascontiguousarray(arr),
+                urlpath=b2nd_path,
+                chunks=chunks,
+                blocks=blocks,
+                cparams=cparams,
+                mmap_mode="w+",
+            )
+            # Clean up a stale .npy left behind by a previous failed attempt for this case.
+            if os.path.exists(npy_path):
+                os.remove(npy_path)
+
+        else:
+            np.save(npy_path, np.ascontiguousarray(arr))
+        """
 
     @staticmethod
     def save_case(
