@@ -191,9 +191,11 @@ def torch_resize_3d(arr, new_shape, is_seg=False):
     mode = "nearest" if is_seg else "trilinear"
     arr_t = torch.from_numpy(arr[None]).float()  # (1, C, X, Y, Z)
 
+    new_shape = tuple(int(x) for x in new_shape)
+
     out = F.interpolate(
         arr_t,
-        size=new_shape.tolist(),
+        size=new_shape,
         mode=mode,
         align_corners=False if mode != "nearest" else None,
     )
@@ -338,6 +340,7 @@ def resample_data_or_seg(
             # Now resize along the separated axis
             if shape[axis] != new_shape[axis]:
                 # 1D interpolate with nearest/linear
+                new_shape = np.array(new_shape)
                 resized_axis = torch_resize_3d(
                     resized_slices[None],  # (1, D, H, W)
                     new_shape.tolist(),
